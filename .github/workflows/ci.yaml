@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PowerShell validation modules
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+
+      - name: Validate version and PowerShell syntax
+        run: |
+          $version = (Get-Content ./VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+              throw "VERSION must use X.Y.Z format: $version"
+          }
+
+          $failed = $false
+          Get-ChildItem -Recurse -Include *.ps1, *.psm1 | ForEach-Object {
+              $tokens = $null
+              $errors = $null
+              [void] [System.Management.Automation.Language.Parser]::ParseFile(
+                  $_.FullName,
+                  [ref] $tokens,
+                  [ref] $errors
+              )
+
+              foreach ($parseError in $errors) {
+                  $failed = $true
+                  Write-Error "$($_.FullName): $($parseError.Message)" -ErrorAction Continue
+              }
+          }
+
+          if ($failed) {
+              throw 'PowerShell parsing failed.'
+          }
+
+      - name: Run static analysis
+        run: |
+          $results = @()
+          foreach ($path in @('./src', './scripts', './tests')) {
+              $results += Invoke-ScriptAnalyzer `
+                  -Path $path `
+                  -Recurse `
+                  -Severity Warning, Error `
+                  -ExcludeRule PSUseShouldProcessForStateChangingFunctions
+          }
+
+          if ($results.Count -gt 0) {
+              $results | Format-Table RuleName, Severity, ScriptName, Line, Message -Wrap
+              throw 'PSScriptAnalyzer reported warnings or errors.'
+          }
+
+      - name: Run tests
+        run: |
+          $testConfiguration = New-PesterConfiguration
+          $testConfiguration.Run.Path = './tests'
+          $testConfiguration.Run.PassThru = $true
+          $testConfiguration.Output.Verbosity = 'Detailed'
+          $result = Invoke-Pester -Configuration $testConfiguration
+          if ($result.FailedCount -gt 0) {
+              throw "$($result.FailedCount) Pester test(s) failed."
+          }
+
+      - name: Build production package
+        run: ./scripts/package.ps1
+
+      - name: Validate package output
+        run: |
+          $version = (Get-Content ./VERSION -Raw).Trim()
+          $archive = "./dist/BackupSeven-$version.zip"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+              throw "Package was not created: $archive"
+          }
+
+      - name: Upload production package
+        uses: actions/upload-artifact@v4
+        with:
+          name: BackupSeven-package
+          path: dist/BackupSeven-*.zip
+          if-no-files-found: error
