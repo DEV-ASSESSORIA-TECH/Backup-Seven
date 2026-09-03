@@ -1,0 +1,15 @@
+# Local configuration and credentials
+src/config.psd1
+config.psd1
+Secrets/
+src/Secrets/
+
+# Runtime data and build output
+Runtime/
+src/Runtime/
+dist/
+
+# Test and editor artifacts
+TestResults/
+*.TestResults.xml
+.vscode/
