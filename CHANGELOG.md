@@ -6,6 +6,11 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
 
 ## [Não publicado]
 
+### Corrigido
+
+- Verificação de tag/release inexistente não deixa mais exit code `1` encerrar o workflow.
+- O empacotamento agora gera e valida SHA-256 para uso no CI e na release.
+
 ## [0.1.0] - Não publicado
 
 ### Adicionado

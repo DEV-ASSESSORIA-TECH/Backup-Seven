@@ -116,9 +116,10 @@ ter acesso a todos os caminhos locais e arquivos de credenciais configurados.
 
 ## Distribuição
 
-`scripts/package.ps1` monta o ZIP por uma lista fechada de arquivos e reabre o
-resultado para validar seu conteúdo. Configuração local, credenciais, runtime,
-testes, workflows, `ARCHITECTURE.md` e `CHANGELOG.md` não entram no pacote.
+`scripts/package.ps1` monta o ZIP por uma lista fechada de arquivos, reabre o
+resultado para validar seu conteúdo e gera o arquivo SHA-256 correspondente.
+Configuração local, credenciais, runtime, testes, workflows, `ARCHITECTURE.md` e
+`CHANGELOG.md` não entram no pacote.
 
 O CI executa parsing, PSScriptAnalyzer, Pester e empacotamento. O release é
 manual, usa `VERSION` como fonte de verdade, recusa uma versão cuja tag ou

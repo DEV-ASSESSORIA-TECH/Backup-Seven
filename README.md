@@ -124,9 +124,10 @@ Gere o pacote com:
 .\scripts\package.ps1
 ```
 
-O resultado será `dist\BackupSeven-<VERSION>.zip`. O CI valida parsing,
-PSScriptAnalyzer, testes e pacote. O workflow manual de release cria a tag
-`v<VERSION>`, publica a GitHub Release e anexa o ZIP e seu SHA256.
+O resultado será `dist\BackupSeven-<VERSION>.zip` acompanhado de
+`BackupSeven-<VERSION>.zip.sha256`. O CI valida parsing, PSScriptAnalyzer,
+testes, pacote e checksum. O workflow manual de release cria a tag `v<VERSION>`,
+publica a GitHub Release e anexa os dois arquivos.
 
 No repositório fonte, `ARCHITECTURE.md` contém os contratos detalhados e
 `CHANGELOG.md` registra o histórico de versões. Esses documentos não fazem parte
