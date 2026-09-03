@@ -48,6 +48,9 @@ Não é necessário banco de estado ou manifesto:
 - um arquivo em `Completed` foi enviado e confirmado remotamente;
 - somente arquivos em `Completed` participam da retenção local por idade.
 
+Os valores de retenção são inteiros de pelo menos um dia. O timestamp usado para
+avaliar a idade vem do nome controlado do artefato, não de `LastWriteTime`.
+
 Uma nova execução tenta reenviar arquivos pendentes dos tipos solicitados antes
 de criar novos artefatos. Uma falha nessa nova tentativa não impede a criação de
 outro backup local.
@@ -69,6 +72,11 @@ Os objetos remotos usam o mesmo nome em:
 Um archive passa de `Pending` para `Completed` somente depois de um
 `rclone copyto` e de um `rclone check --one-way` limitado ao arquivo. O
 BackupSeven não executa `rclone sync` nem remove objetos remotos.
+
+O `rclone check` compara tamanho e o melhor hash comum informado pelos backends.
+Se o provedor S3 não oferecer hash compatível, essa limitação deve ser validada
+durante a homologação; baixar novamente todo o objeto não faz parte da versão
+inicial.
 
 ## Configuração e credenciais
 
@@ -105,3 +113,13 @@ e a opção "Executar independentemente de o usuário estar conectado". As taref
 regulares selecionam explicitamente `Database` ou `Fiscal`; `Full` é destinado
 a uma execução completa solicitada por um operador. A conta do agendador deve
 ter acesso a todos os caminhos locais e arquivos de credenciais configurados.
+
+## Distribuição
+
+`scripts/package.ps1` monta o ZIP por uma lista fechada de arquivos e reabre o
+resultado para validar seu conteúdo. Configuração local, credenciais, runtime,
+testes, workflows, `ARCHITECTURE.md` e `CHANGELOG.md` não entram no pacote.
+
+O CI executa parsing, PSScriptAnalyzer, Pester e empacotamento. O release é
+manual, usa `VERSION` como fonte de verdade, recusa uma versão cuja tag ou
+release já exista e publica o ZIP acompanhado de SHA256.

@@ -6,16 +6,18 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
 
 ## [Não publicado]
 
-### Adicionado
-
-- Contratos iniciais de arquitetura e configuração.
-- Logs UTF-8 da aplicação com contexto de execução, modo e etapa.
-- Operações fundamentais de criação e validação de archives com 7-Zip.
-- Backups independentes nos modos `Database`, `Fiscal` e `Full`.
-- Envio validado pelo rclone com fila local para novas tentativas.
-- Retenção local restrita aos backups confirmados e bloqueio de concorrência.
-- Testes automatizados dos módulos e dos principais fluxos de execução.
-
 ## [0.1.0] - Não publicado
 
-- Primeira versão do BackupSeven pronta para produção, ainda em desenvolvimento.
+### Adicionado
+
+- Contratos de arquitetura e configuração externa.
+- Logs UTF-8 com contexto de execução, modo e etapa.
+- Criação e validação de archives com 7-Zip.
+- Backups independentes nos modos `Database`, `Fiscal` e `Full`.
+- Dump completo do banco com credenciais em arquivo externo do MySQL.
+- Envio validado pelo rclone com fila local para novas tentativas.
+- Retenção local restrita aos backups confirmados e bloqueio de concorrência.
+- Testes automatizados dos módulos, fluxos de erro e pacote de produção.
+- Pacote versionado por allowlist, sem configuração ou dependências externas.
+- CI para parsing, análise estática, testes e empacotamento.
+- Release manual com tag `v<VERSION>`, ZIP e SHA256.
