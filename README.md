@@ -128,5 +128,6 @@ O resultado será `dist\BackupSeven-<VERSION>.zip`. O CI valida parsing,
 PSScriptAnalyzer, testes e pacote. O workflow manual de release cria a tag
 `v<VERSION>`, publica a GitHub Release e anexa o ZIP e seu SHA256.
 
-Os contratos detalhados estão em [`ARCHITECTURE.md`](ARCHITECTURE.md), e o
-histórico de versões está em [`CHANGELOG.md`](CHANGELOG.md).
+No repositório fonte, `ARCHITECTURE.md` contém os contratos detalhados e
+`CHANGELOG.md` registra o histórico de versões. Esses documentos não fazem parte
+do pacote enxuto de produção.
