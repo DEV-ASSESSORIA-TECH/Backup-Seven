@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read and validate version
+        run: |
+          $version = (Get-Content ./VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+              throw "VERSION must use X.Y.Z format: $version"
+          }
+
+          if (-not (Select-String -LiteralPath ./CHANGELOG.md -Pattern "\[$([regex]::Escape($version))\]" -Quiet)) {
+              throw "CHANGELOG.md has no entry for version $version."
+          }
+
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "TAG=v$version" >> $env:GITHUB_ENV
+          "ZIP_PATH=dist/BackupSeven-$version.zip" >> $env:GITHUB_ENV
+
+      - name: Ensure tag and release do not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git rev-parse --verify --quiet "refs/tags/$env:TAG" | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+              throw "Tag $env:TAG already exists."
+          }
+
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+              throw "Release $env:TAG already exists."
+          }
+
+      - name: Build production package
+        run: ./scripts/package.ps1
+
+      - name: Generate SHA256
+        run: |
+          $archive = Get-Item -LiteralPath $env:ZIP_PATH
+          $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($archive.Name)" | Set-Content -LiteralPath "$($archive.FullName).sha256" -Encoding ascii
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          gh release create `
+              $env:TAG `
+              $env:ZIP_PATH `
+              "$env:ZIP_PATH.sha256" `
+              --target $env:GITHUB_SHA `
+              --title "BackupSeven $env:VERSION" `
+              --generate-notes
