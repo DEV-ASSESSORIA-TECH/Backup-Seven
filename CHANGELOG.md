@@ -11,6 +11,10 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
 - Contratos iniciais de arquitetura e configuração.
 - Logs UTF-8 da aplicação com contexto de execução, modo e etapa.
 - Operações fundamentais de criação e validação de archives com 7-Zip.
+- Backups independentes nos modos `Database`, `Fiscal` e `Full`.
+- Envio validado pelo rclone com fila local para novas tentativas.
+- Retenção local restrita aos backups confirmados e bloqueio de concorrência.
+- Testes automatizados dos módulos e dos principais fluxos de execução.
 
 ## [0.1.0] - Não publicado
 

@@ -5,9 +5,9 @@ aplicação pequena em PowerShell 7. Ele cria backups lógicos do banco do Seven
 compacta a pasta `C:\Seven Sistemas\Fiscal` e envia os arquivos `.7z` validados
 por meio do rclone.
 
-> Situação: a versão 0.1.0 está em desenvolvimento. As fundações de log e
-> compactação já estão disponíveis; o comando completo de backup ainda não está
-> pronto para ser agendado.
+> Situação: a versão 0.1.0 está em desenvolvimento. O pipeline completo e seus
+> testes já estão disponíveis; empacotamento e automações de CI/release ainda
+> não foram concluídos.
 
 ## Princípios operacionais
 
