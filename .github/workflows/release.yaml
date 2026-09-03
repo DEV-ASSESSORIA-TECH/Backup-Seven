@@ -39,24 +39,51 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+
           git rev-parse --verify --quiet "refs/tags/$env:TAG" | Out-Null
-          if ($LASTEXITCODE -eq 0) {
+          $tagCheckExitCode = $LASTEXITCODE
+          if ($tagCheckExitCode -eq 0) {
               throw "Tag $env:TAG already exists."
+          }
+          if ($tagCheckExitCode -ne 1) {
+              throw "Unable to check tag $env:TAG (exit code $tagCheckExitCode)."
           }
 
           gh release view $env:TAG *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $releaseCheckExitCode = $LASTEXITCODE
+          if ($releaseCheckExitCode -eq 0) {
               throw "Release $env:TAG already exists."
           }
 
-      - name: Build production package
-        run: ./scripts/package.ps1
+          Write-Host "Tag and release $env:TAG are available."
+          exit 0
 
-      - name: Generate SHA256
+      - name: Build production package
         run: |
-          $archive = Get-Item -LiteralPath $env:ZIP_PATH
-          $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $($archive.Name)" | Set-Content -LiteralPath "$($archive.FullName).sha256" -Encoding ascii
+          $ErrorActionPreference = 'Stop'
+          $packageScript = './scripts/package.ps1'
+          if (-not (Test-Path -LiteralPath $packageScript -PathType Leaf)) {
+              throw "Package script was not found: $packageScript"
+          }
+
+          Write-Host "Building package from $(Get-Location)..."
+          & $packageScript
+
+          $archive = Get-Item -LiteralPath $env:ZIP_PATH -ErrorAction Stop
+          $checksumPath = "$($archive.FullName).sha256"
+          if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
+              throw "Package checksum was not created: $checksumPath"
+          }
+
+          $recordedHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+')[0]
+          $actualHash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($recordedHash -ne $actualHash) {
+              throw "SHA256 validation failed for $($archive.Name)."
+          }
+
+          Write-Host "Package created: $($archive.FullName)"
+          Write-Host "SHA256: $actualHash"
 
       - name: Create GitHub release
         env:
