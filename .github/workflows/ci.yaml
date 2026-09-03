@@ -86,13 +86,19 @@ jobs:
         run: |
           $version = (Get-Content ./VERSION -Raw).Trim()
           $archive = "./dist/BackupSeven-$version.zip"
+          $checksum = "$archive.sha256"
           if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
               throw "Package was not created: $archive"
+          }
+          if (-not (Test-Path -LiteralPath $checksum -PathType Leaf)) {
+              throw "Package checksum was not created: $checksum"
           }
 
       - name: Upload production package
         uses: actions/upload-artifact@v4
         with:
           name: BackupSeven-package
-          path: dist/BackupSeven-*.zip
+          path: |
+            dist/BackupSeven-*.zip
+            dist/BackupSeven-*.zip.sha256
           if-no-files-found: error

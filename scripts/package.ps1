@@ -63,8 +63,12 @@ try {
 
     $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
     $archivePath = Join-Path $OutputDirectory "BackupSeven-$version.zip"
+    $checksumPath = "$archivePath.sha256"
     if (Test-Path -LiteralPath $archivePath) {
         Remove-Item -LiteralPath $archivePath -Force
+    }
+    if (Test-Path -LiteralPath $checksumPath) {
+        Remove-Item -LiteralPath $checksumPath -Force
     }
 
     Compress-Archive -Path (Join-Path $stagingRoot '*') -DestinationPath $archivePath -CompressionLevel Optimal
@@ -93,6 +97,15 @@ try {
     if ($differences.Count -gt 0) {
         $details = $differences | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }
         throw "Package content validation failed. $($details -join '; ')"
+    }
+
+    $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$hash  $([System.IO.Path]::GetFileName($archivePath))" |
+        Set-Content -LiteralPath $checksumPath -Encoding ascii
+
+    $recordedHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+')[0]
+    if ($recordedHash -ne $hash) {
+        throw "SHA256 validation failed for package: $archivePath"
     }
 
     Get-Item -LiteralPath $archivePath

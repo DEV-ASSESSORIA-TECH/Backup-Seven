@@ -24,6 +24,15 @@ Describe 'Production package' {
         $script:Archive.Name | Should -Be "BackupSeven-$version.zip"
     }
 
+    It 'creates a valid SHA256 file beside the archive' {
+        $checksumPath = "$($script:Archive.FullName).sha256"
+        Test-Path -LiteralPath $checksumPath -PathType Leaf | Should -BeTrue
+
+        $recordedHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+')[0]
+        $actualHash = (Get-FileHash -LiteralPath $script:Archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $recordedHash | Should -Be $actualHash
+    }
+
     It 'contains only the production allowlist' {
         $expectedEntries = @(
             'Backup-Seven.ps1'
