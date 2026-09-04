@@ -3,7 +3,7 @@
 ## Escopo
 
 O BackupSeven é uma aplicação PowerShell 7 para um único servidor, instalada em
-`C:\TI\SCRIPTS\BackupSeven`. Ela produz dois tipos independentes de backup:
+`C:\TI\Scripts\BackupSeven`. Ela produz dois tipos independentes de backup:
 
 - `Database`: dump lógico criado pelo mysqldump e compactado pelo 7-Zip.
 - `Fiscal`: archive da pasta `C:\Seven Sistemas\Fiscal` criado pelo 7-Zip.
@@ -90,8 +90,11 @@ inicial.
 
 ## Configuração e credenciais
 
-O `config.psd1` pertence à instalação local e nunca é distribuído. O repositório
-e o pacote contêm apenas `config.example.psd1`.
+O repositório mantém `src\config.example.psd1` e
+`src\Secrets\mysql-backup.example.cnf`, sempre sem credenciais reais. Durante o
+empacotamento, eles são copiados para os nomes operacionais `config.psd1` e
+`Secrets\mysql-backup.cnf`. O segundo é somente uma estrutura para preenchimento
+manual; ele não é gerado pelo MySQL.
 
 As credenciais do banco ficam em um arquivo externo de opções do MySQL indicado
 por `Database.DefaultsExtraFile`. As credenciais S3 ficam na configuração
@@ -132,8 +135,10 @@ ter acesso a todos os caminhos locais e arquivos de credenciais configurados.
 
 `scripts/package.ps1` monta o ZIP por uma lista fechada de arquivos, reabre o
 resultado para validar seu conteúdo e gera o arquivo SHA-256 correspondente.
-Configuração local, credenciais, runtime, testes, workflows, `ARCHITECTURE.md` e
-`CHANGELOG.md` não entram no pacote.
+O empacotador renomeia os dois modelos para seus nomes de produção. Credenciais
+reais, `rclone.conf`, runtime, logs, testes, workflows, `ARCHITECTURE.md` e
+`CHANGELOG.md` não entram no pacote. Uma atualização deve preservar os arquivos
+operacionais já preenchidos antes de extrair uma nova versão.
 
 O CI executa parsing, PSScriptAnalyzer, Pester e empacotamento. O release é
 manual, usa `VERSION` como fonte de verdade, recusa uma versão cuja tag ou
