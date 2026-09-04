@@ -4,7 +4,13 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
-## [Não lançado]
+## [0.2.0] - 2026-09-04
+
+### Adicionado
+
+- Modelo de `mysql-backup.cnf` no pacote, pronto para preenchimento manual.
+- Tutorial completo de instalação, credenciais, validação, agendamento,
+  diagnóstico e atualização no README.
 
 ### Alterado
 
@@ -13,6 +19,11 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
 - Logs ficam diretamente em `Paths.LogRoot`, usam nomenclatura equivalente à
   dos archives e têm retenção baseada no timestamp controlado do nome.
 - O log final de cada execução é enviado e validado no S3 sob o prefixo `Logs`.
+- O pacote entrega `config.psd1` e `Secrets\mysql-backup.cnf` com seus nomes de
+  produção, mantendo os modelos explicitamente identificados no repositório.
+- Caminho operacional padronizado como `C:\TI\Scripts\BackupSeven`.
+- Configuração inicial alinhada ao mysqldump do MySQL 5.5 e ao banco `a_estoque`
+  identificados no processo legado.
 
 ## [0.1.0] - 2026-09-03
 
