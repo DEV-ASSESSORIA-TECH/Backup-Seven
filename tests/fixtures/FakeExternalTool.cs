@@ -13,6 +13,12 @@ internal static class FakeExternalTool
 
     public static int Main(string[] args)
     {
+        var invocationLog = Environment.GetEnvironmentVariable("BACKUPSEVEN_FAKE_INVOCATION_LOG");
+        if (!string.IsNullOrWhiteSpace(invocationLog))
+        {
+            File.AppendAllText(invocationLog, string.Join("|", args) + Environment.NewLine);
+        }
+
         if (args.Length > 0 && args[0] == "a")
         {
             var archivePath = args.Skip(1).First(argument => !argument.StartsWith("-"));
@@ -33,11 +39,21 @@ internal static class FakeExternalTool
 
         if (args.Length > 0 && args[0] == "copyto")
         {
+            if (args.Length > 1 && args[1].EndsWith(".log", StringComparison.OrdinalIgnoreCase))
+            {
+                return ExitCode("BACKUPSEVEN_FAKE_RCLONE_LOG_COPY_EXIT");
+            }
+
             return ExitCode("BACKUPSEVEN_FAKE_RCLONE_COPY_EXIT");
         }
 
         if (args.Length > 0 && args[0] == "check")
         {
+            if (args.Any(argument => argument.EndsWith(".log", StringComparison.OrdinalIgnoreCase)))
+            {
+                return ExitCode("BACKUPSEVEN_FAKE_RCLONE_LOG_CHECK_EXIT");
+            }
+
             return ExitCode("BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT");
         }
 

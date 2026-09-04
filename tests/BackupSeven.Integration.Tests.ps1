@@ -15,8 +15,8 @@ BeforeAll {
             -ConfigPath $script:ConfigPath 2>&1)
 
         $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0 -and (Test-Path -LiteralPath $script:Runtime)) {
-            $logLines = @(Get-ChildItem -LiteralPath $script:Runtime -Filter '*.log' -File -Recurse |
+        if ($exitCode -ne 0 -and (Test-Path -LiteralPath $script:Logs)) {
+            $logLines = @(Get-ChildItem -LiteralPath $script:Logs -Filter '*.log' -File |
                     ForEach-Object { Get-Content -LiteralPath $_.FullName })
             $script:LastBackupOutput += $logLines
         }
@@ -31,6 +31,9 @@ BeforeEach {
     $fiscal = Join-Path $script:TestRoot 'Fiscal'
     $secrets = Join-Path $script:TestRoot 'secrets'
     $script:Runtime = Join-Path $script:TestRoot 'Runtime'
+    $script:Logs = Join-Path $script:TestRoot 'Logs'
+    $script:InvocationLog = Join-Path $script:TestRoot 'tool-invocations.log'
+    $env:BACKUPSEVEN_FAKE_INVOCATION_LOG = $script:InvocationLog
     $null = New-Item -ItemType Directory -Path $tools, $fiscal, $secrets -Force
     Set-Content -LiteralPath (Join-Path $fiscal 'fiscal.txt') -Value 'fiscal content'
 
@@ -76,7 +79,10 @@ BeforeEach {
         RemoteRoot = 's3:bucket/backups'
     }
     Archive = @{ CompressionLevel = 5 }
-    Paths = @{ RuntimeRoot = $(ConvertTo-Psd1String $script:Runtime) }
+    Paths = @{
+        RuntimeRoot = $(ConvertTo-Psd1String $script:Runtime)
+        LogRoot = $(ConvertTo-Psd1String $script:Logs)
+    }
     Retention = @{ CompletedDays = 7; LogDays = 30 }
 }
 "@
@@ -90,7 +96,10 @@ AfterEach {
         'BACKUPSEVEN_FAKE_RCLONE_LIST_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_COPY_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT',
-        'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT'
+        'BACKUPSEVEN_FAKE_RCLONE_LOG_COPY_EXIT',
+        'BACKUPSEVEN_FAKE_RCLONE_LOG_CHECK_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT',
+        'BACKUPSEVEN_FAKE_INVOCATION_LOG'
     )) {
         [Environment]::SetEnvironmentVariable($name, $null)
     }
@@ -113,9 +122,24 @@ Context 'End-to-end orchestration' {
         @(Get-ChildItem (Join-Path $script:Runtime 'Pending/Database') -Filter '*.7z' -File -Recurse).Count |
             Should -Be 0
         @(Get-ChildItem (Join-Path $script:Runtime 'Work') -Force).Count | Should -Be 0
-        $logContent = Get-ChildItem (Join-Path $script:Runtime 'Logs') -Filter '*.log' -File -Recurse |
+        $archive = Get-ChildItem (Join-Path $script:Runtime 'Completed/Database') -Filter '*.7z' -File -Recurse |
+            Select-Object -First 1
+        $archive.Name | Should -Match '^BackupSeven_\d{4}-\d{2}-\d{2}_\d{6}Z_TEST-SERVER_Database_[a-f0-9]{8}\.7z$'
+
+        $logFiles = @(Get-ChildItem $script:Logs -Filter '*.log' -File)
+        $logFiles.Count | Should -Be 1
+        $logFiles[0].Name | Should -Match '^BackupSevenLog_\d{4}-\d{2}-\d{2}_\d{6}Z_TEST-SERVER_Database_[a-f0-9]{8}\.log$'
+        @(Get-ChildItem $script:Logs -Directory).Count | Should -Be 0
+
+        $logContent = $logFiles |
             ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
         $logContent -join [Environment]::NewLine | Should -Not -Match 'super-secret'
+
+        $invocations = Get-Content -LiteralPath $script:InvocationLog
+        $invocations -join [Environment]::NewLine |
+            Should -Match 'copyto\|.*\.7z\|s3:bucket/backups/TEST-SERVER/Database/\d{4}/\d{2}/\d{2}/BackupSeven_'
+        $invocations -join [Environment]::NewLine |
+            Should -Match 'copyto\|.*\.log\|s3:bucket/backups/TEST-SERVER/Logs/\d{4}/\d{2}/\d{2}/BackupSevenLog_'
     }
 
     It 'keeps an unconfirmed Fiscal archive pending and retries it next time' {
@@ -130,6 +154,18 @@ Context 'End-to-end orchestration' {
             Should -Be 0
         @(Get-ChildItem (Join-Path $script:Runtime 'Completed/Fiscal') -Filter '*.7z' -File -Recurse).Count |
             Should -Be 2
+    }
+
+    It 'returns failure and preserves the local log when remote log validation fails' {
+        $env:BACKUPSEVEN_FAKE_RCLONE_LOG_CHECK_EXIT = '1'
+
+        Invoke-TestBackup -Mode Database | Should -Be 1
+
+        @(Get-ChildItem (Join-Path $script:Runtime 'Completed/Database') -Filter '*.7z' -File -Recurse).Count |
+            Should -Be 1
+        $logFiles = @(Get-ChildItem $script:Logs -Filter '*.log' -File)
+        $logFiles.Count | Should -Be 1
+        Get-Content -LiteralPath $logFiles[0].FullName -Raw | Should -Match 'rclone check failed'
     }
 
     It 'continues Fiscal when Database fails in Full mode' {
@@ -160,14 +196,19 @@ Context 'End-to-end orchestration' {
         $completedDirectory = Join-Path $script:Runtime 'Completed/Database/2020/01'
         $pendingDirectory = Join-Path $script:Runtime 'Pending/Fiscal/2020/01'
         $null = New-Item -ItemType Directory -Path $completedDirectory, $pendingDirectory -Force
-        $completedArchive = Join-Path $completedDirectory 'BackupSeven_TEST-SERVER_Database_20200101T000000Z_deadbeef.7z'
-        $pendingArchive = Join-Path $pendingDirectory 'BackupSeven_TEST-SERVER_Fiscal_20200101T000000Z_deadbeef.7z'
+        $completedArchive = Join-Path $completedDirectory 'BackupSeven_2020-01-01_000000Z_TEST-SERVER_Database_deadbeef.7z'
+        $pendingArchive = Join-Path $pendingDirectory 'BackupSeven_2020-01-01_000000Z_TEST-SERVER_Fiscal_deadbeef.7z'
         Set-Content -LiteralPath $completedArchive, $pendingArchive -Value 'archive'
+
+        $null = New-Item -ItemType Directory -Path $script:Logs -Force
+        $expiredLog = Join-Path $script:Logs 'BackupSevenLog_2020-01-01_000000Z_TEST-SERVER_Database_deadbeef.log'
+        Set-Content -LiteralPath $expiredLog -Value 'old log'
 
         Invoke-TestBackup -Mode Database | Should -Be 0
 
         Test-Path -LiteralPath $completedArchive | Should -BeFalse
         Test-Path -LiteralPath $pendingArchive | Should -BeTrue
+        Test-Path -LiteralPath $expiredLog | Should -BeFalse
     }
 
     It 'returns exit code 2 for an invalid configuration' {

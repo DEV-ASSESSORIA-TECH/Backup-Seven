@@ -3,7 +3,7 @@
 O BackupSeven substitui o antigo processo de backup em arquivo batch por uma
 aplicação pequena em PowerShell 7. Ele cria backups lógicos do banco do Seven,
 compacta a pasta `C:\Seven Sistemas\Fiscal` e envia os arquivos `.7z` validados
-por meio do rclone.
+e o log final de cada execução por meio do rclone.
 
 > A versão 0.1.0 está pronta para homologação. Antes do uso em produção, valide
 > o dump, a restauração e os arquivos Fiscal no ambiente real do Seven.
@@ -42,9 +42,10 @@ Depois da extração:
 1. Copie `config.example.psd1` para `config.psd1`.
 2. Ajuste os caminhos dos três executáveis e o nome do banco.
 3. Configure o remote S3 do rclone em um arquivo externo.
-4. Crie o arquivo externo de opções do MySQL.
-5. Restrinja os arquivos de credenciais com ACLs NTFS.
-6. Execute manualmente cada modo antes de criar os agendamentos.
+4. Configure `InstanceName`, `Paths.RuntimeRoot` e `Paths.LogRoot`.
+5. Crie o arquivo externo de opções do MySQL.
+6. Restrinja os arquivos de credenciais com ACLs NTFS.
+7. Execute manualmente cada modo antes de criar os agendamentos.
 
 Exemplo mínimo do arquivo de opções do MySQL:
 
@@ -74,25 +75,40 @@ Modos disponíveis:
 
 Use `-ConfigPath` somente quando o arquivo não estiver ao lado do script.
 
-## Diretórios e retenção
+## Diretórios, armazenamento e retenção
 
 O diretório configurado em `Paths.RuntimeRoot` é criado automaticamente:
 
 - `Pending`: archives válidos que ainda não foram confirmados no S3;
 - `Completed`: archives enviados e confirmados;
-- `Work`: temporários da execução atual;
-- `Logs`: um arquivo UTF-8 por execução.
+- `Work`: temporários da execução atual.
+
+Os logs UTF-8 ficam diretamente em `Paths.LogRoot`, sem subdiretórios. Na
+instalação padrão, o caminho é `C:\TI\SCRIPTS\BackupSeven\Logs`.
+
+Para uma instância `MULTI-COPIAS`, os objetos remotos seguem este contrato:
+
+```text
+<RemoteRoot>/MULTI-COPIAS/Database/2026/09/01/BackupSeven_2026-09-01_143000Z_MULTI-COPIAS_Database_a1b2c3d4.7z
+<RemoteRoot>/MULTI-COPIAS/Fiscal/2026/09/01/BackupSeven_2026-09-01_220000Z_MULTI-COPIAS_Fiscal_e5f6a7b8.7z
+<RemoteRoot>/MULTI-COPIAS/Logs/2026/09/01/BackupSevenLog_2026-09-01_220000Z_MULTI-COPIAS_Fiscal_e5f6a7b8.log
+```
+
+Datas e horários dos nomes são UTC. O log é enviado e validado no encerramento
+da execução quando a configuração do armazenamento já tiver sido validada.
 
 Uma nova execução tenta reenviar as pendências dos tipos selecionados. A
-retenção local remove somente archives em `Completed`. Os valores de retenção
-devem ser de pelo menos um dia. O BackupSeven não aplica retenção remota.
+retenção local remove somente archives em `Completed` e logs expirados. A idade
+é obtida do timestamp UTC presente no nome controlado de cada arquivo. Os
+valores de retenção devem ser de pelo menos um dia. O BackupSeven não aplica
+retenção remota.
 
 ## Exit codes
 
 | Código | Significado |
 | ---: | --- |
 | 0 | Execução concluída. |
-| 1 | Falha no dump, compactação, envio ou validação remota. |
+| 1 | Falha no dump, compactação, envio de backup/log ou validação remota. |
 | 2 | Argumento, configuração, dependência ou permissão inválida. |
 | 3 | Outra execução já está ativa. |
 | 4 | Backup concluído, mas limpeza ou retenção falhou. |

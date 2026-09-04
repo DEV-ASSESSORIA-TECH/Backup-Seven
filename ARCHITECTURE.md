@@ -23,7 +23,7 @@ tarefas agendadas do Windows e não inclui executáveis de terceiros.
 | `Archive.psm1` | Criar um `.7z` único, rejeitar qualquer exit code não zero do 7-Zip, verificar se a saída não está vazia e executar `7z test`. |
 | `Database.psm1` | Executar mysqldump no diretório de trabalho e retornar somente um dump bem-sucedido e não vazio. |
 | `Fiscal.psm1` | Validar a origem Fiscal e produzir um archive validado por meio de `Archive.psm1`. |
-| `Storage.psm1` | Enviar um archive com `rclone copyto` e validá-lo com `rclone check --one-way`. |
+| `Storage.psm1` | Enviar um archive ou log com `rclone copyto` e validá-lo com `rclone check --one-way`. |
 
 Os módulos expõem somente as funções necessárias ao script principal. Falhas
 operacionais esperadas são lançadas como erros terminantes e tratadas no limite
@@ -37,8 +37,14 @@ O diretório configurado em `Paths.RuntimeRoot` contém:
 Runtime\
 ├── Pending\<Database|Fiscal>\yyyy\MM\
 ├── Completed\<Database|Fiscal>\yyyy\MM\
-├── Work\<run-id>\
-└── Logs\yyyy\MM\
+└── Work\<run-id>\
+```
+
+Os logs ficam fora de `Runtime`, diretamente no diretório configurado:
+
+```text
+Logs\
+└── BackupSevenLog_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_<Database|Fiscal|Full>_<run-id>.log
 ```
 
 Não é necessário banco de estado ou manifesto:
@@ -49,7 +55,8 @@ Não é necessário banco de estado ou manifesto:
 - somente arquivos em `Completed` participam da retenção local por idade.
 
 Os valores de retenção são inteiros de pelo menos um dia. O timestamp usado para
-avaliar a idade vem do nome controlado do artefato, não de `LastWriteTime`.
+avaliar a idade de archives e logs vem do nome controlado do arquivo, não de
+`LastWriteTime`.
 
 Uma nova execução tenta reenviar arquivos pendentes dos tipos solicitados antes
 de criar novos artefatos. Uma falha nessa nova tentativa não impede a criação de
@@ -60,18 +67,21 @@ outro backup local.
 Os nomes usam UTC e são únicos:
 
 ```text
-BackupSeven_<InstanceName>_<Database|Fiscal>_<yyyyMMddTHHmmssZ>_<run-id>.7z
+BackupSeven_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_<Database|Fiscal>_<run-id>.7z
 ```
 
 Os objetos remotos usam o mesmo nome em:
 
 ```text
-<RemoteRoot>/<InstanceName>/<Database|Fiscal>/yyyy/MM/<archive>
+<RemoteRoot>/<InstanceName>/<Database|Fiscal>/yyyy/MM/dd/<archive>
+<RemoteRoot>/<InstanceName>/Logs/yyyy/MM/dd/<log>
 ```
 
 Um archive passa de `Pending` para `Completed` somente depois de um
 `rclone copyto` e de um `rclone check --one-way` limitado ao arquivo. O
-BackupSeven não executa `rclone sync` nem remove objetos remotos.
+BackupSeven não executa `rclone sync` nem remove objetos remotos. O log final é
+publicado pelo mesmo contrato de `copyto` e `check` quando o armazenamento já
+foi validado naquela execução.
 
 O `rclone check` compara tamanho e o melhor hash comum informado pelos backends.
 Se o provedor S3 não oferecer hash compatível, essa limitação deve ser validada
@@ -96,12 +106,16 @@ Os registros de log têm o seguinte formato:
 2026-09-03T10:30:00.000-04:00 [INFO] [run-id] [Database/Dump] mensagem
 ```
 
+O arquivo local fica diretamente em `Paths.LogRoot`, sem hierarquia de datas.
+O timestamp do nome é UTC; as linhas mantêm o offset local para facilitar a
+auditoria no servidor.
+
 Os exit codes são intencionalmente poucos e estáveis:
 
 | Código | Significado |
 | ---: | --- |
 | 0 | Todo o trabalho solicitado, novas tentativas pendentes e retenção tiveram sucesso. |
-| 1 | Falha no dump, compactação, envio ou validação remota. |
+| 1 | Falha no dump, compactação, envio de backup/log ou validação remota. |
 | 2 | Chamada, configuração, dependência, diretório ou permissão inválida. |
 | 3 | Outra execução do BackupSeven detém o bloqueio. |
 | 4 | Os backups tiveram sucesso, mas a limpeza ou retenção falhou. |

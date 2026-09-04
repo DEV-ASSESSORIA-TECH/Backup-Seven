@@ -1,6 +1,6 @@
 @{
-    # Stable name used to separate servers in file names and remote paths.
-    InstanceName = 'SEVEN-SERVER'
+    # Stable customer/site name used in file names and remote paths.
+    InstanceName = 'MULTI-COPIAS'
 
     Tools = @{
         MySqlDump = 'C:\Seven Sistemas\MySQL\bin\mysqldump.exe'
@@ -29,7 +29,7 @@
 
     Storage = @{
         ConfigPath = 'C:\TI\SCRIPTS\BackupSeven\Secrets\rclone.conf'
-        RemoteRoot = 's3:bucket/backup-seven'
+        RemoteRoot = 's3:assessoriatech-backups-seven-prod'
     }
 
     Archive = @{
@@ -38,6 +38,7 @@
 
     Paths = @{
         RuntimeRoot = 'C:\TI\SCRIPTS\BackupSeven\Runtime'
+        LogRoot     = 'C:\TI\SCRIPTS\BackupSeven\Logs'
     }
 
     Retention = @{

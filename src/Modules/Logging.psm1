@@ -14,6 +14,10 @@ function Initialize-BackupLog {
 
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
+        [string] $InstanceName,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
         [string] $RunId,
 
         [Parameter(Mandatory)]
@@ -25,14 +29,19 @@ function Initialize-BackupLog {
         [string] $Version
     )
 
-    $now = Get-Date
-    $logDirectory = Join-Path $LogRoot $now.ToString('yyyy\MM')
-    $null = New-Item -ItemType Directory -Path $logDirectory -Force
+    $now = [DateTime]::UtcNow
+    $null = New-Item -ItemType Directory -Path $LogRoot -Force
 
     $safeRunId = $RunId -replace '[^A-Za-z0-9_-]', '_'
-    $fileName = 'BackupSeven_{0}_{1}_{2}.log' -f $now.ToString('yyyyMMdd_HHmmss'), $Mode, $safeRunId
+    $shortRunId = $safeRunId.Substring(0, 8)
+    $fileName = 'BackupSevenLog_{0}_{1}Z_{2}_{3}_{4}.log' -f `
+        $now.ToString('yyyy-MM-dd'),
+        $now.ToString('HHmmss'),
+        $InstanceName,
+        $Mode,
+        $shortRunId
 
-    $script:LogFilePath = Join-Path $logDirectory $fileName
+    $script:LogFilePath = Join-Path $LogRoot $fileName
     $script:RunId = $RunId
     $script:Mode = $Mode
 

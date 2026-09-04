@@ -101,6 +101,7 @@ function Read-BackupConfiguration {
     Assert-ConfigurationValue -Section $configuration.Storage -Key 'RemoteRoot' -DisplayName 'Storage.RemoteRoot'
     Assert-ConfigurationValue -Section $configuration.Archive -Key 'CompressionLevel' -DisplayName 'Archive.CompressionLevel'
     Assert-ConfigurationValue -Section $configuration.Paths -Key 'RuntimeRoot' -DisplayName 'Paths.RuntimeRoot'
+    Assert-ConfigurationValue -Section $configuration.Paths -Key 'LogRoot' -DisplayName 'Paths.LogRoot'
     Assert-ConfigurationValue -Section $configuration.Retention -Key 'CompletedDays' -DisplayName 'Retention.CompletedDays'
     Assert-ConfigurationValue -Section $configuration.Retention -Key 'LogDays' -DisplayName 'Retention.LogDays'
 
@@ -110,6 +111,10 @@ function Read-BackupConfiguration {
 
     if (-not [System.IO.Path]::IsPathFullyQualified([string] $configuration.Paths.RuntimeRoot)) {
         throw 'Paths.RuntimeRoot must be an absolute path.'
+    }
+
+    if (-not [System.IO.Path]::IsPathFullyQualified([string] $configuration.Paths.LogRoot)) {
+        throw 'Paths.LogRoot must be an absolute path.'
     }
 
     $compressionLevel = [int] $configuration.Archive.CompressionLevel
@@ -149,6 +154,7 @@ function Get-BackupType {
 function New-RuntimeLayout {
     param(
         [Parameter(Mandatory)][string] $RuntimeRoot,
+        [Parameter(Mandatory)][string] $LogRoot,
         [Parameter(Mandatory)][string] $RunId,
         [Parameter(Mandatory)][string[]] $BackupTypes
     )
@@ -159,7 +165,7 @@ function New-RuntimeLayout {
         Completed = Join-Path $RuntimeRoot 'Completed'
         WorkRoot = Join-Path $RuntimeRoot 'Work'
         Work      = Join-Path (Join-Path $RuntimeRoot 'Work') $RunId
-        Logs      = Join-Path $RuntimeRoot 'Logs'
+        Logs      = $LogRoot
         Lock      = Join-Path $RuntimeRoot 'BackupSeven.lock'
     }
 
@@ -209,35 +215,58 @@ function New-ArtifactInfo {
 
     $timestamp = [DateTime]::UtcNow
     $shortRunId = $RunId.Substring(0, 8)
-    $fileName = 'BackupSeven_{0}_{1}_{2}_{3}.7z' -f `
+    $fileName = 'BackupSeven_{0}_{1}Z_{2}_{3}_{4}.7z' -f `
+        $timestamp.ToString('yyyy-MM-dd'),
+        $timestamp.ToString('HHmmss'),
         $InstanceName,
         $BackupType,
-        $timestamp.ToString('yyyyMMddTHHmmssZ'),
         $shortRunId
 
     [pscustomobject]@{
         FileName = $fileName
         Year     = $timestamp.ToString('yyyy')
         Month    = $timestamp.ToString('MM')
+        Day      = $timestamp.ToString('dd')
     }
 }
 
 function Get-ArtifactDateInfo {
     param([Parameter(Mandatory)][string] $FileName)
 
-    if ($FileName -notmatch '_((?<date>\d{8})T(?<time>\d{6})Z)_[A-Fa-f0-9]{8}\.7z$') {
+    if ($FileName -notmatch '^BackupSeven_(?<date>\d{4}-\d{2}-\d{2})_(?<time>\d{6})Z_[A-Za-z0-9][A-Za-z0-9_-]*_(Database|Fiscal)_[A-Fa-f0-9]{8}\.7z$') {
         throw "Backup file name does not follow the artifact contract: $FileName"
     }
 
     [pscustomobject]@{
         Timestamp = [DateTime]::ParseExact(
-            "$($Matches.date)T$($Matches.time)Z",
-            'yyyyMMddTHHmmssZ',
+            "$($Matches.date)_$($Matches.time)Z",
+            'yyyy-MM-dd_HHmmssZ',
             [System.Globalization.CultureInfo]::InvariantCulture,
             [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
         )
         Year  = $Matches.date.Substring(0, 4)
-        Month = $Matches.date.Substring(4, 2)
+        Month = $Matches.date.Substring(5, 2)
+        Day   = $Matches.date.Substring(8, 2)
+    }
+}
+
+function Get-LogDateInfo {
+    param([Parameter(Mandatory)][string] $FileName)
+
+    if ($FileName -notmatch '^BackupSevenLog_(?<date>\d{4}-\d{2}-\d{2})_(?<time>\d{6})Z_[A-Za-z0-9][A-Za-z0-9_-]*_(Database|Fiscal|Full)_[A-Fa-f0-9]{8}\.log$') {
+        throw "Log file name does not follow the artifact contract: $FileName"
+    }
+
+    [pscustomobject]@{
+        Timestamp = [DateTime]::ParseExact(
+            "$($Matches.date)_$($Matches.time)Z",
+            'yyyy-MM-dd_HHmmssZ',
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+        )
+        Year  = $Matches.date.Substring(0, 4)
+        Month = $Matches.date.Substring(5, 2)
+        Day   = $Matches.date.Substring(8, 2)
     }
 }
 
@@ -250,13 +279,38 @@ function Get-RemoteArchivePath {
     )
 
     $dateParts = Get-ArtifactDateInfo -FileName $FileName
-    return '{0}/{1}/{2}/{3}/{4}/{5}' -f `
+    return '{0}/{1}/{2}/{3}/{4}/{5}/{6}' -f `
         $RemoteRoot.TrimEnd('/'),
         $InstanceName,
         $BackupType,
         $dateParts.Year,
         $dateParts.Month,
+        $dateParts.Day,
         $FileName
+}
+
+function Publish-ExecutionLog {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Configuration
+    )
+
+    $logPath = Get-BackupLogPath
+    $logFile = Get-Item -LiteralPath $logPath -ErrorAction Stop
+    $dateParts = Get-LogDateInfo -FileName $logFile.Name
+    $remotePath = '{0}/{1}/Logs/{2}/{3}/{4}/{5}' -f `
+        $Configuration.Storage.RemoteRoot.TrimEnd('/'),
+        $Configuration.InstanceName,
+        $dateParts.Year,
+        $dateParts.Month,
+        $dateParts.Day,
+        $logFile.Name
+
+    Write-BackupLog -Level INFO -Stage 'Log/Upload' -Message "Publishing final execution log to '$remotePath'."
+    $null = Send-SevenBackupFile `
+        -RclonePath $Configuration.Tools.Rclone `
+        -ConfigPath $Configuration.Storage.ConfigPath `
+        -LocalPath $logFile.FullName `
+        -RemotePath $remotePath
 }
 
 function Publish-BackupArchive {
@@ -424,13 +478,17 @@ function Remove-ExpiredLocalFile {
 
     $logCutoff = [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.LogDays)
     $currentLogPath = Get-BackupLogPath
-    foreach ($logFile in Get-ChildItem -LiteralPath $Layout.Logs -Filter '*.log' -File -Recurse) {
-        if ($logFile.FullName -eq $currentLogPath -or $logFile.LastWriteTimeUtc -ge $logCutoff) {
+    foreach ($logFile in Get-ChildItem -LiteralPath $Layout.Logs -Filter '*.log' -File) {
+        if ($logFile.FullName -eq $currentLogPath) {
             continue
         }
 
         try {
-            Remove-Item -LiteralPath $logFile.FullName -Force -ErrorAction Stop
+            $dateParts = Get-LogDateInfo -FileName $logFile.Name
+            if ($dateParts.Timestamp -lt $logCutoff) {
+                Remove-Item -LiteralPath $logFile.FullName -Force -ErrorAction Stop
+                Write-BackupLog -Level INFO -Stage 'Retention/Log' -Message "Removed expired log '$($logFile.FullName)'."
+            }
         }
         catch {
             $succeeded = $false
@@ -469,6 +527,7 @@ function Invoke-BackupSeven {
     $lockStream = $null
     $layout = $null
     $logInitialized = $false
+    $storageValidated = $false
 
     try {
         if ([string]::IsNullOrWhiteSpace($RequestedConfigPath)) {
@@ -477,8 +536,17 @@ function Invoke-BackupSeven {
 
         $version = Get-ApplicationVersion
         $configuration = Read-BackupConfiguration -Path $RequestedConfigPath -BackupTypes $backupTypes
-        $layout = New-RuntimeLayout -RuntimeRoot $configuration.Paths.RuntimeRoot -RunId $runId -BackupTypes $backupTypes
-        $null = Initialize-BackupLog -LogRoot $layout.Logs -RunId $runId -Mode $RequestedMode -Version $version
+        $layout = New-RuntimeLayout `
+            -RuntimeRoot $configuration.Paths.RuntimeRoot `
+            -LogRoot $configuration.Paths.LogRoot `
+            -RunId $runId `
+            -BackupTypes $backupTypes
+        $null = Initialize-BackupLog `
+            -LogRoot $layout.Logs `
+            -InstanceName $configuration.InstanceName `
+            -RunId $runId `
+            -Mode $RequestedMode `
+            -Version $version
         $logInitialized = $true
 
         try {
@@ -500,6 +568,7 @@ function Invoke-BackupSeven {
             -RclonePath $configuration.Tools.Rclone `
             -ConfigPath $configuration.Storage.ConfigPath `
             -RemoteRoot $configuration.Storage.RemoteRoot
+        $storageValidated = $true
 
         $operationSucceeded = $true
         foreach ($backupType in $backupTypes) {
@@ -544,20 +613,39 @@ function Invoke-BackupSeven {
 
         if (-not $operationSucceeded) {
             Write-BackupLog -Level ERROR -Stage 'Complete' -Message 'Execution completed with backup or upload failures.'
+            $exitCode = 1
+        }
+        elseif (-not $maintenanceSucceeded) {
+            Write-BackupLog -Level ERROR -Stage 'Complete' -Message 'Backups completed, but cleanup or retention failed.'
+            $exitCode = 4
+        }
+        else {
+            Write-BackupLog -Level INFO -Stage 'Complete' -Message 'Execution completed successfully.'
+            $exitCode = 0
+        }
+
+        try {
+            Publish-ExecutionLog -Configuration $configuration
+        }
+        catch {
+            Write-BackupLog -Level ERROR -Stage 'Log/Upload' -Message $_.Exception.Message
             return 1
         }
 
-        if (-not $maintenanceSucceeded) {
-            Write-BackupLog -Level ERROR -Stage 'Complete' -Message 'Backups completed, but cleanup or retention failed.'
-            return 4
-        }
-
-        Write-BackupLog -Level INFO -Stage 'Complete' -Message 'Execution completed successfully.'
-        return 0
+        return $exitCode
     }
     catch {
         if ($logInitialized) {
             Write-BackupLog -Level ERROR -Stage 'Startup' -Message $_.Exception.Message
+
+            if ($storageValidated) {
+                try {
+                    Publish-ExecutionLog -Configuration $configuration
+                }
+                catch {
+                    Write-BackupLog -Level ERROR -Stage 'Log/Upload' -Message $_.Exception.Message
+                }
+            }
         }
         else {
             Write-Error $_.Exception.Message -ErrorAction Continue

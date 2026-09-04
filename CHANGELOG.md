@@ -4,6 +4,16 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [Não lançado]
+
+### Alterado
+
+- Archives agora usam data e hora UTC legíveis no nome e são organizados no S3
+  por instância, tipo, ano, mês e dia.
+- Logs ficam diretamente em `Paths.LogRoot`, usam nomenclatura equivalente à
+  dos archives e têm retenção baseada no timestamp controlado do nome.
+- O log final de cada execução é enviado e validado no S3 sob o prefixo `Logs`.
+
 ## [0.1.0] - 2026-09-03
 
 ### Corrigido
