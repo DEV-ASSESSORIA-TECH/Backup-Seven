@@ -36,8 +36,9 @@ Describe 'Production package' {
     It 'contains only the production allowlist' {
         $expectedEntries = @(
             'Backup-Seven.ps1'
-            'config.example.psd1'
+            'config.psd1'
             'README.md'
+            'Secrets/mysql-backup.cnf'
             'VERSION'
             'Modules/Archive.psm1'
             'Modules/Database.psm1'
@@ -49,8 +50,31 @@ Describe 'Production package' {
         @($script:Entries | Sort-Object) | Should -Be @($expectedEntries | Sort-Object)
     }
 
-    It 'does not contain local configuration or development files' {
-        $script:Entries | Should -Not -Contain 'config.psd1'
+    It 'ships editable templates under their production names' {
+        $configEntry = $script:Zip.GetEntry('config.psd1')
+        $mysqlEntry = $script:Zip.GetEntry('Secrets/mysql-backup.cnf')
+
+        $configReader = [System.IO.StreamReader]::new($configEntry.Open())
+        $mysqlReader = [System.IO.StreamReader]::new($mysqlEntry.Open())
+        try {
+            $configContent = $configReader.ReadToEnd()
+            $mysqlContent = $mysqlReader.ReadToEnd()
+        }
+        finally {
+            $configReader.Dispose()
+            $mysqlReader.Dispose()
+        }
+
+        $configContent | Should -Match "InstanceName = 'MULTI-COPIAS'"
+        $configContent | Should -Match "Name = 'a_estoque'"
+        $mysqlContent | Should -Match '^\[client\]'
+        $mysqlContent | Should -Match 'password=REPLACE_WITH_BACKUP_PASSWORD'
+    }
+
+    It 'does not contain source templates, local secrets or development files' {
+        $script:Entries | Should -Not -Contain 'config.example.psd1'
+        $script:Entries | Should -Not -Contain 'Secrets/mysql-backup.example.cnf'
+        $script:Entries | Should -Not -Contain 'Secrets/rclone.conf'
         $script:Entries | Should -Not -Contain 'ARCHITECTURE.md'
         $script:Entries | Should -Not -Contain 'CHANGELOG.md'
         @($script:Entries | Where-Object { $_ -like 'tests/*' }).Count | Should -Be 0

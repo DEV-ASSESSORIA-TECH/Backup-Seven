@@ -1,8 +1,10 @@
 # Local configuration and credentials
 src/config.psd1
 config.psd1
-Secrets/
-src/Secrets/
+/Secrets/
+/src/Secrets/*
+!/src/Secrets/mysql-backup.example.cnf
+Logs/
 
 # Runtime data and build output
 Runtime/

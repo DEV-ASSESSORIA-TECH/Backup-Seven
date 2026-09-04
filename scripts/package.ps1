@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repositoryRoot 'src'
+$mysqlTemplatePath = Join-Path $sourceRoot 'Secrets/mysql-backup.example.cnf'
 $versionPath = Join-Path $repositoryRoot 'VERSION'
 $stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("BackupSeven-package-$([guid]::NewGuid().ToString('N'))")
 
@@ -33,6 +34,7 @@ try {
     $requiredSources = @(
         (Join-Path $sourceRoot 'Backup-Seven.ps1')
         (Join-Path $sourceRoot 'config.example.psd1')
+        $mysqlTemplatePath
         (Join-Path $repositoryRoot 'README.md')
         $versionPath
     )
@@ -51,10 +53,17 @@ try {
 
     $null = New-Item -ItemType Directory -Path $stagingRoot -Force
     $stagingModules = Join-Path $stagingRoot 'Modules'
+    $stagingSecrets = Join-Path $stagingRoot 'Secrets'
     $null = New-Item -ItemType Directory -Path $stagingModules -Force
+    $null = New-Item -ItemType Directory -Path $stagingSecrets -Force
 
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'Backup-Seven.ps1') -Destination $stagingRoot
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'config.example.psd1') -Destination $stagingRoot
+    Copy-Item `
+        -LiteralPath (Join-Path $sourceRoot 'config.example.psd1') `
+        -Destination (Join-Path $stagingRoot 'config.psd1')
+    Copy-Item `
+        -LiteralPath $mysqlTemplatePath `
+        -Destination (Join-Path $stagingSecrets 'mysql-backup.cnf')
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $stagingRoot
     Copy-Item -LiteralPath $versionPath -Destination $stagingRoot
     foreach ($moduleFile in $moduleFiles) {
@@ -75,8 +84,9 @@ try {
 
     $expectedEntries = @(
         'Backup-Seven.ps1'
-        'config.example.psd1'
+        'config.psd1'
         'README.md'
+        'Secrets/mysql-backup.cnf'
         'VERSION'
     ) + @($moduleFiles | ForEach-Object { "Modules/$($_.Name)" })
 

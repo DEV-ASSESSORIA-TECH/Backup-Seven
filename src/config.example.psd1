@@ -3,21 +3,22 @@
     InstanceName = 'MULTI-COPIAS'
 
     Tools = @{
-        MySqlDump = 'C:\Seven Sistemas\MySQL\bin\mysqldump.exe'
+        MySqlDump = 'C:\Program Files\MySQL\MySQL Server 5.5\bin\mysqldump.exe'
         SevenZip   = 'C:\Program Files\7-Zip\7z.exe'
         Rclone     = 'C:\TI\TOOLS\rclone\rclone.exe'
     }
 
     Database = @{
-        Name = 'seven'
+        Name = 'a_estoque'
 
-        # This file is created only on the server and protected with NTFS ACLs.
-        # Expected format:
+        # The package includes a placeholder file. Fill it on the server and
+        # protect it with NTFS ACLs. Expected format:
         # [client]
-        # user=backup_user
-        # password=change-me
-        # host=127.0.0.1
-        DefaultsExtraFile = 'C:\TI\SCRIPTS\BackupSeven\Secrets\mysql-backup.cnf'
+        # host=REPLACE_WITH_MYSQL_HOST
+        # port=3306
+        # user=REPLACE_WITH_BACKUP_USER
+        # password=REPLACE_WITH_BACKUP_PASSWORD
+        DefaultsExtraFile = 'C:\TI\Scripts\BackupSeven\Secrets\mysql-backup.cnf'
 
         # Site-specific mysqldump switches may be added here.
         ExtraArguments = @()
@@ -28,7 +29,7 @@
     }
 
     Storage = @{
-        ConfigPath = 'C:\TI\SCRIPTS\BackupSeven\Secrets\rclone.conf'
+        ConfigPath = 'C:\TI\Scripts\BackupSeven\Secrets\rclone.conf'
         RemoteRoot = 's3:assessoriatech-backups-seven-prod'
     }
 
@@ -37,8 +38,8 @@
     }
 
     Paths = @{
-        RuntimeRoot = 'C:\TI\SCRIPTS\BackupSeven\Runtime'
-        LogRoot     = 'C:\TI\SCRIPTS\BackupSeven\Logs'
+        RuntimeRoot = 'C:\TI\Scripts\BackupSeven\Runtime'
+        LogRoot     = 'C:\TI\Scripts\BackupSeven\Logs'
     }
 
     Retention = @{
