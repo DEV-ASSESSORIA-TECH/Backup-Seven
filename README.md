@@ -5,7 +5,7 @@ pequena em PowerShell 7. Ele cria o dump lógico do banco do Seven, compacta o
 dump e a pasta Fiscal com 7-Zip, envia os artefatos e o log final para o S3 por
 meio do rclone e mantém retenção local por idade.
 
-> A versão 0.2.0 deve ser homologada com um backup e uma restauração reais antes
+> A versão 0.2.1 deve ser homologada com um backup e uma restauração reais antes
 > de entrar no agendamento de produção.
 
 ## O que a aplicação faz
@@ -28,20 +28,21 @@ executáveis é incluído no pacote.
 O ZIP de produção contém somente:
 
 ```text
-BackupSeven-0.2.0.zip
+BackupSeven-0.2.1.zip
 ├── Backup-Seven.ps1
 ├── config.psd1
 ├── Modules\
 ├── Secrets\
-│   └── mysql-backup.cnf
+│   ├── mysql-backup.cnf
+│   └── rclone.conf
 ├── README.md
 └── VERSION
 ```
 
-`config.psd1` e `Secrets\mysql-backup.cnf` são modelos distribuídos já com os
-nomes usados em produção. Eles ainda precisam ser revisados e preenchidos. O
-`rclone.conf` não é distribuído porque é criado pelo próprio rclone e contém a
-credencial AWS.
+`config.psd1`, `Secrets\mysql-backup.cnf` e `Secrets\rclone.conf` são modelos
+distribuídos já com os nomes usados em produção. Eles precisam ser revisados e
+ter seus marcadores substituídos antes do uso. Os modelos versionados não contêm
+credenciais reais.
 
 ## 1. Pré-requisitos
 
@@ -60,7 +61,7 @@ Caminhos esperados inicialmente:
 C:\Program Files\PowerShell\7\pwsh.exe
 C:\Program Files\7-Zip\7z.exe
 C:\Program Files\MySQL\MySQL Server 5.5\bin\mysqldump.exe
-C:\TI\TOOLS\rclone\rclone.exe
+C:\Program Files\rclone\rclone.exe
 ```
 
 Ajuste `config.psd1` se algum executável estiver em outro local.
@@ -81,7 +82,8 @@ C:\TI\Scripts\BackupSeven\
 ├── config.psd1
 ├── Modules\
 ├── Secrets\
-│   └── mysql-backup.cnf
+│   ├── mysql-backup.cnf
+│   └── rclone.conf
 ├── README.md
 └── VERSION
 ```
@@ -100,13 +102,15 @@ dados conhecidos da instalação atual:
     Tools = @{
         MySqlDump = 'C:\Program Files\MySQL\MySQL Server 5.5\bin\mysqldump.exe'
         SevenZip   = 'C:\Program Files\7-Zip\7z.exe'
-        Rclone     = 'C:\TI\TOOLS\rclone\rclone.exe'
+        Rclone     = 'C:\Program Files\rclone\rclone.exe'
     }
 
     Database = @{
         Name              = 'a_estoque'
         DefaultsExtraFile = 'C:\TI\Scripts\BackupSeven\Secrets\mysql-backup.cnf'
-        ExtraArguments    = @()
+        ExtraArguments    = @(
+            '--skip-events'
+        )
     }
 
     Fiscal = @{
@@ -120,6 +124,7 @@ dados conhecidos da instalação atual:
 
     Archive = @{
         CompressionLevel = 5
+        CpuLimitPercent  = 50
     }
 
     Paths = @{
@@ -154,6 +159,11 @@ Use preferencialmente uma conta exclusiva para backup, não `root`. Ela precisa
 conseguir ler as tabelas e incluir views, triggers, routines e events usados
 pelo banco. As permissões devem ser confirmadas no MySQL 5.5 do ambiente.
 
+Na configuração fornecida, `--skip-events` evita que a ausência da permissão
+`EVENT` interrompa o dump. Isso significa que os eventos agendados do MySQL não
+estarão no arquivo de backup. Remova essa opção somente se a conta receber a
+permissão necessária e um teste real confirmar o dump com os eventos.
+
 O arquivo contém a senha em texto legível. Restrinja suas permissões NTFS à
 conta da tarefa agendada e aos administradores autorizados. Não coloque a senha
 em `config.psd1`, `Database.ExtraArguments`, scripts ou argumentos da tarefa.
@@ -163,10 +173,18 @@ senhas nos argumentos adicionais e não registra seu conteúdo no log.
 
 ## 5. Configuração do rclone e S3
 
-Crie o arquivo no caminho que o BackupSeven utilizará:
+O pacote já fornece `Secrets\rclone.conf` com a seção `s3`, a região
+`sa-east-1` e marcadores para as credenciais. Substitua:
+
+```ini
+access_key_id = REPLACE_WITH_AWS_ACCESS_KEY_ID
+secret_access_key = REPLACE_WITH_AWS_SECRET_ACCESS_KEY
+```
+
+Se preferir recriar ou editar o arquivo pelo próprio rclone, execute:
 
 ```powershell
-& 'C:\TI\TOOLS\rclone\rclone.exe' config `
+& 'C:\Program Files\rclone\rclone.exe' config `
   --config 'C:\TI\Scripts\BackupSeven\Secrets\rclone.conf'
 ```
 
@@ -185,7 +203,7 @@ mesmas ACLs NTFS aplicadas ao arquivo do MySQL.
 Teste o acesso antes de executar o backup:
 
 ```powershell
-& 'C:\TI\TOOLS\rclone\rclone.exe' lsf `
+& 'C:\Program Files\rclone\rclone.exe' lsf `
   's3:assessoriatech-backups-seven-prod' `
   --config 'C:\TI\Scripts\BackupSeven\Secrets\rclone.conf' `
   --max-depth 1
@@ -259,9 +277,26 @@ assessoriatech-backups-seven-prod/
 ```
 
 Datas e horários presentes nos nomes são UTC. As linhas internas dos logs usam
-o offset local do servidor.
+a hora local vigente do servidor no formato `yyyy-MM-dd HH:mm:ss`, por exemplo:
 
-## 8. Retenção e novas tentativas
+```text
+2026-09-04 13:44:45 [INFO] [e5f6a7b8...] [Fiscal/Upload] mensagem
+```
+
+## 8. Compactação e uso de processador
+
+`CompressionLevel = 5` corresponde ao nível normal do 7-Zip. Ele altera o
+equilíbrio entre tempo, memória e tamanho do archive, não a integridade do
+conteúdo. O BackupSeven ainda executa `7z test` e só prossegue se o archive for
+válido.
+
+`CpuLimitPercent = 50` converte o percentual em aproximadamente metade dos
+processadores lógicos e passa esse número ao 7-Zip. O mínimo é uma thread. Esse
+controle limita o paralelismo da compactação, mas não é uma cota rígida do
+Windows e não limita o mysqldump nem o rclone. Por isso, confirme o consumo real
+no servidor durante a homologação.
+
+## 9. Retenção e novas tentativas
 
 - `CompletedDays` remove por idade somente archives já confirmados no S3.
 - `LogDays` remove logs locais por idade.
@@ -276,10 +311,10 @@ Uma nova execução tenta reenviar archives pendentes dos tipos selecionados. Se
 o envio do log falhar, a execução retorna erro e preserva o log local, mas não
 mantém uma fila separada para reenvio de logs antigos.
 
-## 9. Agendador de Tarefas
+## 10. Agendador de Tarefas
 
-Crie duas tarefas independentes: uma para `Database`, duas vezes ao dia, e uma
-para `Fiscal`, uma vez ao dia.
+No ambiente atual, crie duas tarefas independentes em modo `Full`: uma às
+12:00 e outra às 19:00.
 
 Configuração recomendada para cada ação:
 
@@ -287,14 +322,22 @@ Configuração recomendada para cada ação:
 Programa:
 C:\Program Files\PowerShell\7\pwsh.exe
 
+Argumentos Full:
+-NoLogo -NoProfile -NonInteractive -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Full
+
+Iniciar em:
+C:\TI\Scripts\BackupSeven
+```
+
+Como alternativa, use execuções separadas por modo:
+
+```
 Argumentos Database:
 -NoLogo -NoProfile -NonInteractive -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Database
 
 Argumentos Fiscal:
 -NoLogo -NoProfile -NonInteractive -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Fiscal
 
-Iniciar em:
-C:\TI\Scripts\BackupSeven
 ```
 
 Nas opções da tarefa:
@@ -307,7 +350,77 @@ Nas opções da tarefa:
 
 O lock interno também impede sobreposição entre tarefas de modos diferentes.
 
-## 10. Exit codes e diagnóstico
+Para cadastrar as duas tarefas `Full` como `SYSTEM`, execute o exemplo abaixo
+em um PowerShell elevado. Antes, confirme que `SYSTEM` possui acesso aos
+diretórios e arquivos de credenciais usados pelo BackupSeven.
+
+```powershell
+$TaskPath = "\ASSESSORIA SCRIPTS\"
+$ScriptPath = "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1"
+$WorkingDir = "C:\TI\Scripts\BackupSeven"
+$Pwsh = "C:\Program Files\PowerShell\7\pwsh.exe"
+
+# Cria a pasta no Agendador de Tarefas, caso ainda não exista
+$Scheduler = New-Object -ComObject "Schedule.Service"
+$Scheduler.Connect()
+$RootFolder = $Scheduler.GetFolder("\")
+
+try {
+    $RootFolder.GetFolder("\ASSESSORIA SCRIPTS") | Out-Null
+}
+catch {
+    $RootFolder.CreateFolder("ASSESSORIA SCRIPTS") | Out-Null
+}
+
+# Ação executada pelas duas tarefas
+$Action = New-ScheduledTaskAction `
+    -Execute $Pwsh `
+    -Argument "-NoLogo -NoProfile -NonInteractive -File `"$ScriptPath`" -Mode Full" `
+    -WorkingDirectory $WorkingDir
+
+# Configurações
+$Settings = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew
+
+# Executar como SYSTEM, com privilégios elevados
+$Principal = New-ScheduledTaskPrincipal `
+    -UserId "SYSTEM" `
+    -LogonType ServiceAccount `
+    -RunLevel Highest
+
+# 12:00
+$Trigger1200 = New-ScheduledTaskTrigger `
+    -Daily `
+    -At "12:00"
+
+Register-ScheduledTask `
+    -TaskName "BackupSeven - Full - 12h00" `
+    -TaskPath $TaskPath `
+    -Action $Action `
+    -Trigger $Trigger1200 `
+    -Settings $Settings `
+    -Principal $Principal `
+    -Description "Backup completo do Seven - Database + Fiscal - 12:00" `
+    -Force
+
+# 19:00
+$Trigger1900 = New-ScheduledTaskTrigger `
+    -Daily `
+    -At "19:00"
+
+Register-ScheduledTask `
+    -TaskName "BackupSeven - Full - 19h00" `
+    -TaskPath $TaskPath `
+    -Action $Action `
+    -Trigger $Trigger1900 `
+    -Settings $Settings `
+    -Principal $Principal `
+    -Description "Backup completo do Seven - Database + Fiscal - 19:00" `
+    -Force
+```
+
+## 11. Exit codes e diagnóstico
 
 | Código | Significado |
 | ---: | --- |
@@ -326,10 +439,11 @@ Ao investigar uma falha:
    dependência externa.
 5. Não apague arquivos de `Pending` antes de entender a falha.
 
-## 11. Atualização de versão
+## 12. Atualização de versão
 
-O pacote contém modelos chamados `config.psd1` e `mysql-backup.cnf`. Em uma
-atualização, não extraia o ZIP por cima da instalação sem preservar:
+O pacote contém modelos chamados `config.psd1`, `mysql-backup.cnf` e
+`rclone.conf`. Em uma atualização, não extraia o ZIP por cima da instalação sem
+preservar:
 
 ```text
 config.psd1
@@ -351,6 +465,7 @@ confundidos com credenciais reais:
 ```text
 src\config.example.psd1
 src\Secrets\mysql-backup.example.cnf
+src\Secrets\rclone.example.conf
 ```
 
 Execute os testes com Pester 5.7.1:
