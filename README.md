@@ -5,9 +5,6 @@ pequena em PowerShell 7. Ele cria o dump lógico do banco do Seven, compacta o
 dump e a pasta Fiscal com 7-Zip, envia os artefatos e o log final para o S3 por
 meio do rclone e mantém retenção local por idade.
 
-> A versão 0.2.1 deve ser homologada com um backup e uma restauração reais antes
-> de entrar no agendamento de produção.
-
 ## O que a aplicação faz
 
 - Executa o mysqldump sem colocar a senha na linha de comando.
