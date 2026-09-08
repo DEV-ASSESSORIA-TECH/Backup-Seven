@@ -4,6 +4,24 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [0.2.1] - 2026-09-08
+
+### Adicionado
+
+- Limite configurável e aproximado do paralelismo do 7-Zip por percentual de
+  processadores lógicos, inicialmente em 50%.
+- Modelo sanitizado de `rclone.conf` no repositório e no pacote de produção.
+
+### Alterado
+
+- Linhas de log agora usam a hora local no formato `yyyy-MM-dd HH:mm:ss` e não
+  repetem o modo quando ele já faz parte da etapa.
+- Configuração inicial ajustada para o caminho real do rclone e para
+  `--skip-events`, necessário enquanto a conta do MySQL não possui permissão
+  para exportar eventos agendados.
+- Documentação operacional ampliada com os contratos de compactação, CPU,
+  credenciais e a limitação explícita do backup de eventos.
+
 ## [0.2.0] - 2026-09-04
 
 ### Adicionado
