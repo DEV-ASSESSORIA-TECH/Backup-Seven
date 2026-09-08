@@ -78,7 +78,7 @@ BeforeEach {
         ConfigPath = $(ConvertTo-Psd1String $rcloneConfig)
         RemoteRoot = 's3:bucket/backups'
     }
-    Archive = @{ CompressionLevel = 5 }
+    Archive = @{ CompressionLevel = 5; CpuLimitPercent = 50 }
     Paths = @{
         RuntimeRoot = $(ConvertTo-Psd1String $script:Runtime)
         LogRoot = $(ConvertTo-Psd1String $script:Logs)
@@ -134,6 +134,9 @@ Context 'End-to-end orchestration' {
         $logContent = $logFiles |
             ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
         $logContent -join [Environment]::NewLine | Should -Not -Match 'super-secret'
+        $logContent -join [Environment]::NewLine |
+            Should -Match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[INFO\] \[[a-f0-9]{32}\] \[Database/Startup\]'
+        $logContent -join [Environment]::NewLine | Should -Not -Match '\[Database/Database/'
 
         $invocations = Get-Content -LiteralPath $script:InvocationLog
         $invocations -join [Environment]::NewLine |

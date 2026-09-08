@@ -5,7 +5,7 @@
     Tools = @{
         MySqlDump = 'C:\Program Files\MySQL\MySQL Server 5.5\bin\mysqldump.exe'
         SevenZip   = 'C:\Program Files\7-Zip\7z.exe'
-        Rclone     = 'C:\TI\TOOLS\rclone\rclone.exe'
+        Rclone     = 'C:\Program Files\rclone\rclone.exe'
     }
 
     Database = @{
@@ -20,8 +20,11 @@
         # password=REPLACE_WITH_BACKUP_PASSWORD
         DefaultsExtraFile = 'C:\TI\Scripts\BackupSeven\Secrets\mysql-backup.cnf'
 
-        # Site-specific mysqldump switches may be added here.
-        ExtraArguments = @()
+        # The current account cannot read MySQL events. Remove this switch only
+        # after granting EVENT and validating a real dump with scheduled events.
+        ExtraArguments = @(
+            '--skip-events'
+        )
     }
 
     Fiscal = @{
@@ -35,6 +38,7 @@
 
     Archive = @{
         CompressionLevel = 5
+        CpuLimitPercent  = 50
     }
 
     Paths = @{

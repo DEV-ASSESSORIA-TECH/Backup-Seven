@@ -100,6 +100,7 @@ function Read-BackupConfiguration {
     Assert-ConfigurationValue -Section $configuration.Storage -Key 'ConfigPath' -DisplayName 'Storage.ConfigPath'
     Assert-ConfigurationValue -Section $configuration.Storage -Key 'RemoteRoot' -DisplayName 'Storage.RemoteRoot'
     Assert-ConfigurationValue -Section $configuration.Archive -Key 'CompressionLevel' -DisplayName 'Archive.CompressionLevel'
+    Assert-ConfigurationValue -Section $configuration.Archive -Key 'CpuLimitPercent' -DisplayName 'Archive.CpuLimitPercent'
     Assert-ConfigurationValue -Section $configuration.Paths -Key 'RuntimeRoot' -DisplayName 'Paths.RuntimeRoot'
     Assert-ConfigurationValue -Section $configuration.Paths -Key 'LogRoot' -DisplayName 'Paths.LogRoot'
     Assert-ConfigurationValue -Section $configuration.Retention -Key 'CompletedDays' -DisplayName 'Retention.CompletedDays'
@@ -120,6 +121,11 @@ function Read-BackupConfiguration {
     $compressionLevel = [int] $configuration.Archive.CompressionLevel
     if ($compressionLevel -lt 0 -or $compressionLevel -gt 9) {
         throw 'Archive.CompressionLevel must be between 0 and 9.'
+    }
+
+    $cpuLimitPercent = [int] $configuration.Archive.CpuLimitPercent
+    if ($cpuLimitPercent -lt 1 -or $cpuLimitPercent -gt 100) {
+        throw 'Archive.CpuLimitPercent must be between 1 and 100.'
     }
 
     if ([int] $configuration.Retention.CompletedDays -lt 1 -or [int] $configuration.Retention.LogDays -lt 1) {
@@ -400,7 +406,8 @@ function Invoke-DatabaseBackup {
             -SevenZipPath $Configuration.Tools.SevenZip `
             -SourcePath $dumpPath `
             -ArchivePath $workArchivePath `
-            -CompressionLevel ([int] $Configuration.Archive.CompressionLevel)
+            -CompressionLevel ([int] $Configuration.Archive.CompressionLevel) `
+            -CpuLimitPercent ([int] $Configuration.Archive.CpuLimitPercent)
 
         $null = New-Item -ItemType Directory -Path $pendingDirectory -Force
         Move-Item -LiteralPath $workArchivePath -Destination $pendingPath -ErrorAction Stop
@@ -435,7 +442,8 @@ function Invoke-FiscalBackup {
         -SevenZipPath $Configuration.Tools.SevenZip `
         -SourcePath $Configuration.Fiscal.SourcePath `
         -ArchivePath $workArchivePath `
-        -CompressionLevel ([int] $Configuration.Archive.CompressionLevel)
+        -CompressionLevel ([int] $Configuration.Archive.CompressionLevel) `
+        -CpuLimitPercent ([int] $Configuration.Archive.CpuLimitPercent)
 
     $null = New-Item -ItemType Directory -Path $pendingDirectory -Force
     Move-Item -LiteralPath $workArchivePath -Destination $pendingPath -ErrorAction Stop

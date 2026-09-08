@@ -19,7 +19,10 @@ function New-SevenFiscalArchive {
         [string] $ArchivePath,
 
         [ValidateRange(0, 9)]
-        [int] $CompressionLevel = 5
+        [int] $CompressionLevel = 5,
+
+        [ValidateRange(1, 100)]
+        [int] $CpuLimitPercent = 50
     )
 
     if (-not (Test-Path -LiteralPath $SourcePath -PathType Container)) {
@@ -32,7 +35,8 @@ function New-SevenFiscalArchive {
         -SevenZipPath $SevenZipPath `
         -SourcePath $SourcePath `
         -ArchivePath $ArchivePath `
-        -CompressionLevel $CompressionLevel
+        -CompressionLevel $CompressionLevel `
+        -CpuLimitPercent $CpuLimitPercent
 }
 
 Export-ModuleMember -Function New-SevenFiscalArchive

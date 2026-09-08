@@ -12,6 +12,8 @@ BeforeAll {
     $script:SevenZip = Join-Path $script:TestRoot '7z.exe'
     $script:MySqlDump = Join-Path $script:TestRoot 'mysqldump.exe'
     $script:Rclone = Join-Path $script:TestRoot 'rclone.exe'
+    $script:InvocationLog = Join-Path $script:TestRoot 'tool-invocations.log'
+    $env:BACKUPSEVEN_FAKE_INVOCATION_LOG = $script:InvocationLog
     Copy-Item $fakeTool $script:SevenZip
     Copy-Item $fakeTool $script:MySqlDump
     Copy-Item $fakeTool $script:Rclone
@@ -33,7 +35,8 @@ AfterAll {
         'BACKUPSEVEN_FAKE_RCLONE_LIST_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_COPY_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT',
-        'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT'
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT',
+        'BACKUPSEVEN_FAKE_INVOCATION_LOG'
     )) {
         [Environment]::SetEnvironmentVariable($name, $null)
     }
@@ -53,6 +56,22 @@ Context 'Archive module' {
 
         $result.Length | Should -BeGreaterThan 0
         Test-Path -LiteralPath $archive | Should -BeTrue
+    }
+
+    It 'limits 7-Zip threads from the configured CPU percentage' {
+        $source = Join-Path $script:TestRoot 'cpu-source.txt'
+        $archive = Join-Path $script:TestRoot 'cpu-limited.7z'
+        Set-Content -LiteralPath $source -Value 'content'
+        $expectedThreads = [Math]::Max(1, [Math]::Floor([Environment]::ProcessorCount * 0.5))
+
+        $null = New-SevenArchive `
+            -SevenZipPath $script:SevenZip `
+            -SourcePath $source `
+            -ArchivePath $archive `
+            -CpuLimitPercent 50
+
+        Get-Content -LiteralPath $script:InvocationLog -Raw |
+            Should -Match "\|-mmt=$expectedThreads\|"
     }
 
     It 'rejects warnings and removes the invalid archive' {

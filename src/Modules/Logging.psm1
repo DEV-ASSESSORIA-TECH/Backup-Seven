@@ -77,13 +77,18 @@ function Write-BackupLog {
 
     # Keep one physical line per event so logs remain easy to search and parse.
     $singleLineMessage = $Message -replace '[\r\n]+', ' '
-    $timestamp = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.fffzzz')
-    $line = '{0} [{1}] [{2}] [{3}/{4}] {5}' -f `
+    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $stageContext = if ($Stage.StartsWith("$($script:Mode)/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $Stage
+    }
+    else {
+        "$($script:Mode)/$Stage"
+    }
+    $line = '{0} [{1}] [{2}] [{3}] {4}' -f `
         $timestamp,
         $Level,
         $script:RunId,
-        $script:Mode,
-        $Stage,
+        $stageContext,
         $singleLineMessage
 
     [System.IO.File]::AppendAllText(
