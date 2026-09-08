@@ -39,6 +39,7 @@ Describe 'Production package' {
             'config.psd1'
             'README.md'
             'Secrets/mysql-backup.cnf'
+            'Secrets/rclone.conf'
             'VERSION'
             'Modules/Archive.psm1'
             'Modules/Database.psm1'
@@ -53,28 +54,36 @@ Describe 'Production package' {
     It 'ships editable templates under their production names' {
         $configEntry = $script:Zip.GetEntry('config.psd1')
         $mysqlEntry = $script:Zip.GetEntry('Secrets/mysql-backup.cnf')
+        $rcloneEntry = $script:Zip.GetEntry('Secrets/rclone.conf')
 
         $configReader = [System.IO.StreamReader]::new($configEntry.Open())
         $mysqlReader = [System.IO.StreamReader]::new($mysqlEntry.Open())
+        $rcloneReader = [System.IO.StreamReader]::new($rcloneEntry.Open())
         try {
             $configContent = $configReader.ReadToEnd()
             $mysqlContent = $mysqlReader.ReadToEnd()
+            $rcloneContent = $rcloneReader.ReadToEnd()
         }
         finally {
             $configReader.Dispose()
             $mysqlReader.Dispose()
+            $rcloneReader.Dispose()
         }
 
         $configContent | Should -Match "InstanceName = 'MULTI-COPIAS'"
         $configContent | Should -Match "Name = 'a_estoque'"
         $mysqlContent | Should -Match '^\[client\]'
         $mysqlContent | Should -Match 'password=REPLACE_WITH_BACKUP_PASSWORD'
+        $rcloneContent | Should -Match '^\[s3\]'
+        $rcloneContent | Should -Match 'access_key_id = REPLACE_WITH_AWS_ACCESS_KEY_ID'
+        $rcloneContent | Should -Match 'secret_access_key = REPLACE_WITH_AWS_SECRET_ACCESS_KEY'
+        $rcloneContent | Should -Match 'region = sa-east-1'
     }
 
     It 'does not contain source templates, local secrets or development files' {
         $script:Entries | Should -Not -Contain 'config.example.psd1'
         $script:Entries | Should -Not -Contain 'Secrets/mysql-backup.example.cnf'
-        $script:Entries | Should -Not -Contain 'Secrets/rclone.conf'
+        $script:Entries | Should -Not -Contain 'Secrets/rclone.example.conf'
         $script:Entries | Should -Not -Contain 'ARCHITECTURE.md'
         $script:Entries | Should -Not -Contain 'CHANGELOG.md'
         @($script:Entries | Where-Object { $_ -like 'tests/*' }).Count | Should -Be 0

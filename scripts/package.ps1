@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repositoryRoot 'src'
 $mysqlTemplatePath = Join-Path $sourceRoot 'Secrets/mysql-backup.example.cnf'
+$rcloneTemplatePath = Join-Path $sourceRoot 'Secrets/rclone.example.conf'
 $versionPath = Join-Path $repositoryRoot 'VERSION'
 $stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("BackupSeven-package-$([guid]::NewGuid().ToString('N'))")
 
@@ -35,6 +36,7 @@ try {
         (Join-Path $sourceRoot 'Backup-Seven.ps1')
         (Join-Path $sourceRoot 'config.example.psd1')
         $mysqlTemplatePath
+        $rcloneTemplatePath
         (Join-Path $repositoryRoot 'README.md')
         $versionPath
     )
@@ -64,6 +66,9 @@ try {
     Copy-Item `
         -LiteralPath $mysqlTemplatePath `
         -Destination (Join-Path $stagingSecrets 'mysql-backup.cnf')
+    Copy-Item `
+        -LiteralPath $rcloneTemplatePath `
+        -Destination (Join-Path $stagingSecrets 'rclone.conf')
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $stagingRoot
     Copy-Item -LiteralPath $versionPath -Destination $stagingRoot
     foreach ($moduleFile in $moduleFiles) {
@@ -87,6 +92,7 @@ try {
         'config.psd1'
         'README.md'
         'Secrets/mysql-backup.cnf'
+        'Secrets/rclone.conf'
         'VERSION'
     ) + @($moduleFiles | ForEach-Object { "Modules/$($_.Name)" })
 

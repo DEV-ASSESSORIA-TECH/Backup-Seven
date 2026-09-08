@@ -4,6 +4,7 @@ config.psd1
 /Secrets/
 /src/Secrets/*
 !/src/Secrets/mysql-backup.example.cnf
+!/src/Secrets/rclone.example.conf
 Logs/
 
 # Runtime data and build output
