@@ -31,6 +31,7 @@ BeforeEach {
     $fiscal = Join-Path $script:TestRoot 'Fiscal'
     $secrets = Join-Path $script:TestRoot 'secrets'
     $script:Runtime = Join-Path $script:TestRoot 'Runtime'
+    $script:Completed = Join-Path $script:TestRoot 'Completed'
     $script:Logs = Join-Path $script:TestRoot 'Logs'
     $script:InvocationLog = Join-Path $script:TestRoot 'tool-invocations.log'
     $env:BACKUPSEVEN_FAKE_INVOCATION_LOG = $script:InvocationLog
@@ -81,6 +82,7 @@ BeforeEach {
     Archive = @{ CompressionLevel = 5; CpuLimitPercent = 50 }
     Paths = @{
         RuntimeRoot = $(ConvertTo-Psd1String $script:Runtime)
+        CompletedRoot = $(ConvertTo-Psd1String $script:Completed)
         LogRoot = $(ConvertTo-Psd1String $script:Logs)
     }
     Retention = @{ CompletedDays = 7; LogDays = 30 }
@@ -117,12 +119,12 @@ Context 'End-to-end orchestration' {
         }
         $exitCode | Should -Be 0
 
-        @(Get-ChildItem (Join-Path $script:Runtime 'Completed/Database') -Filter '*.7z' -File -Recurse).Count |
+        @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File).Count |
             Should -Be 1
         @(Get-ChildItem (Join-Path $script:Runtime 'Pending/Database') -Filter '*.7z' -File -Recurse).Count |
             Should -Be 0
         @(Get-ChildItem (Join-Path $script:Runtime 'Work') -Force).Count | Should -Be 0
-        $archive = Get-ChildItem (Join-Path $script:Runtime 'Completed/Database') -Filter '*.7z' -File -Recurse |
+        $archive = Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File |
             Select-Object -First 1
         $archive.Name | Should -Match '^BackupSeven_\d{4}-\d{2}-\d{2}_\d{6}Z_TEST-SERVER_Database_[a-f0-9]{8}\.7z$'
 
@@ -155,7 +157,7 @@ Context 'End-to-end orchestration' {
         Invoke-TestBackup -Mode Fiscal | Should -Be 0
         @(Get-ChildItem (Join-Path $script:Runtime 'Pending/Fiscal') -Filter '*.7z' -File -Recurse).Count |
             Should -Be 0
-        @(Get-ChildItem (Join-Path $script:Runtime 'Completed/Fiscal') -Filter '*.7z' -File -Recurse).Count |
+        @(Get-ChildItem (Join-Path $script:Completed 'Fiscal') -Filter '*.7z' -File).Count |
             Should -Be 2
     }
 
@@ -164,7 +166,7 @@ Context 'End-to-end orchestration' {
 
         Invoke-TestBackup -Mode Database | Should -Be 1
 
-        @(Get-ChildItem (Join-Path $script:Runtime 'Completed/Database') -Filter '*.7z' -File -Recurse).Count |
+        @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File).Count |
             Should -Be 1
         $logFiles = @(Get-ChildItem $script:Logs -Filter '*.log' -File)
         $logFiles.Count | Should -Be 1
@@ -176,9 +178,9 @@ Context 'End-to-end orchestration' {
 
         Invoke-TestBackup -Mode Full | Should -Be 1
 
-        @(Get-ChildItem (Join-Path $script:Runtime 'Completed/Database') -Filter '*.7z' -File -Recurse).Count |
+        @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File).Count |
             Should -Be 0
-        @(Get-ChildItem (Join-Path $script:Runtime 'Completed/Fiscal') -Filter '*.7z' -File -Recurse).Count |
+        @(Get-ChildItem (Join-Path $script:Completed 'Fiscal') -Filter '*.7z' -File).Count |
             Should -Be 1
     }
 
@@ -196,7 +198,7 @@ Context 'End-to-end orchestration' {
     }
 
     It 'removes only expired completed archives' {
-        $completedDirectory = Join-Path $script:Runtime 'Completed/Database/2020/01'
+        $completedDirectory = Join-Path $script:Completed 'Database'
         $pendingDirectory = Join-Path $script:Runtime 'Pending/Fiscal/2020/01'
         $null = New-Item -ItemType Directory -Path $completedDirectory, $pendingDirectory -Force
         $completedArchive = Join-Path $completedDirectory 'BackupSeven_2020-01-01_000000Z_TEST-SERVER_Database_deadbeef.7z'

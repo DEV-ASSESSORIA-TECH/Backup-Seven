@@ -43,6 +43,7 @@
 
     Paths = @{
         RuntimeRoot = 'C:\TI\Scripts\BackupSeven\Runtime'
+        CompletedRoot = 'C:\TI\Scripts\BackupSeven\Completed'
         LogRoot     = 'C:\TI\Scripts\BackupSeven\Logs'
     }
 

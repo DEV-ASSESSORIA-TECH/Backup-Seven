@@ -102,6 +102,7 @@ function Read-BackupConfiguration {
     Assert-ConfigurationValue -Section $configuration.Archive -Key 'CompressionLevel' -DisplayName 'Archive.CompressionLevel'
     Assert-ConfigurationValue -Section $configuration.Archive -Key 'CpuLimitPercent' -DisplayName 'Archive.CpuLimitPercent'
     Assert-ConfigurationValue -Section $configuration.Paths -Key 'RuntimeRoot' -DisplayName 'Paths.RuntimeRoot'
+    Assert-ConfigurationValue -Section $configuration.Paths -Key 'CompletedRoot' -DisplayName 'Paths.CompletedRoot'
     Assert-ConfigurationValue -Section $configuration.Paths -Key 'LogRoot' -DisplayName 'Paths.LogRoot'
     Assert-ConfigurationValue -Section $configuration.Retention -Key 'CompletedDays' -DisplayName 'Retention.CompletedDays'
     Assert-ConfigurationValue -Section $configuration.Retention -Key 'LogDays' -DisplayName 'Retention.LogDays'
@@ -112,6 +113,10 @@ function Read-BackupConfiguration {
 
     if (-not [System.IO.Path]::IsPathFullyQualified([string] $configuration.Paths.RuntimeRoot)) {
         throw 'Paths.RuntimeRoot must be an absolute path.'
+    }
+
+    if (-not [System.IO.Path]::IsPathFullyQualified([string] $configuration.Paths.CompletedRoot)) {
+        throw 'Paths.CompletedRoot must be an absolute path.'
     }
 
     if (-not [System.IO.Path]::IsPathFullyQualified([string] $configuration.Paths.LogRoot)) {
@@ -160,6 +165,7 @@ function Get-BackupType {
 function New-RuntimeLayout {
     param(
         [Parameter(Mandatory)][string] $RuntimeRoot,
+        [Parameter(Mandatory)][string] $CompletedRoot,
         [Parameter(Mandatory)][string] $LogRoot,
         [Parameter(Mandatory)][string] $RunId,
         [Parameter(Mandatory)][string[]] $BackupTypes
@@ -168,7 +174,7 @@ function New-RuntimeLayout {
     $layout = @{
         Root       = $RuntimeRoot
         Pending    = Join-Path $RuntimeRoot 'Pending'
-        Completed = Join-Path $RuntimeRoot 'Completed'
+        Completed = $CompletedRoot
         WorkRoot = Join-Path $RuntimeRoot 'Work'
         Work      = Join-Path (Join-Path $RuntimeRoot 'Work') $RunId
         Logs      = $LogRoot
@@ -327,7 +333,6 @@ function Publish-BackupArchive {
         [Parameter(Mandatory)][System.Collections.IDictionary] $Layout
     )
 
-    $dateParts = Get-ArtifactDateInfo -FileName $Archive.Name
     $remotePath = Get-RemoteArchivePath `
         -RemoteRoot $Configuration.Storage.RemoteRoot `
         -InstanceName $Configuration.InstanceName `
@@ -341,7 +346,7 @@ function Publish-BackupArchive {
         -LocalPath $Archive.FullName `
         -RemotePath $remotePath
 
-    $completedDirectory = Join-Path (Join-Path (Join-Path $Layout.Completed $BackupType) $dateParts.Year) $dateParts.Month
+    $completedDirectory = Join-Path $Layout.Completed $BackupType
     $null = New-Item -ItemType Directory -Path $completedDirectory -Force
     $completedPath = Join-Path $completedDirectory $Archive.Name
     Move-Item -LiteralPath $Archive.FullName -Destination $completedPath -ErrorAction Stop
@@ -546,6 +551,7 @@ function Invoke-BackupSeven {
         $configuration = Read-BackupConfiguration -Path $RequestedConfigPath -BackupTypes $backupTypes
         $layout = New-RuntimeLayout `
             -RuntimeRoot $configuration.Paths.RuntimeRoot `
+            -CompletedRoot $configuration.Paths.CompletedRoot `
             -LogRoot $configuration.Paths.LogRoot `
             -RunId $runId `
             -BackupTypes $backupTypes
