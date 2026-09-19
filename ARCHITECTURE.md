@@ -21,7 +21,7 @@ tarefas agendadas do Windows e não inclui executáveis de terceiros.
 | `Backup-Seven.ps1` | Validar entrada e configuração, adquirir o bloqueio de execução, coordenar os pipelines solicitados, aplicar retenção e definir o exit code do processo. |
 | `Logging.psm1` | Gravar eventos UTF-8 de uma linha com data, severidade, ID da execução, modo e etapa. Chamadores nunca devem fornecer segredos como mensagens de log. |
 | `Archive.psm1` | Criar um `.7z` único com o paralelismo configurado, rejeitar qualquer exit code não zero do 7-Zip, verificar se a saída não está vazia e executar `7z test`. |
-| `Database.psm1` | Executar mysqldump no diretório de trabalho e retornar somente um dump bem-sucedido e não vazio. |
+| `Database.psm1` | Executar mysql/mysqldump, retornar resultado estruturado, enumerar tabelas/views e normalizar nomes de arquivos do fallback granular. |
 | `Fiscal.psm1` | Validar a origem Fiscal e produzir um archive validado por meio de `Archive.psm1`. |
 | `Storage.psm1` | Enviar um archive ou log com `rclone copyto` e validá-lo com `rclone check --one-way`. |
 
@@ -36,8 +36,16 @@ O diretório configurado em `Paths.RuntimeRoot` contém:
 ```text
 Runtime\
 ├── Pending\<Database|Fiscal>\yyyy\MM\
-├── Completed\<Database|Fiscal>\yyyy\MM\
 └── Work\<run-id>\
+```
+
+Archives confirmados ficam na raiz independente `Paths.CompletedRoot`, sem
+pastas de ano e mês:
+
+```text
+Completed\
+├── Database\<archive>
+└── Fiscal\<archive>
 ```
 
 Os logs ficam fora de `Runtime`, diretamente no diretório configurado:
@@ -47,12 +55,16 @@ Logs\
 └── BackupSevenLog_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_<Database|Fiscal|Full>_<run-id>.log
 ```
 
-Não é necessário banco de estado ou manifesto:
+Não é necessário banco de estado externo:
 
 - um arquivo em `Work` é temporário e deve ser limpo após a execução;
 - um arquivo em `Pending` é válido localmente, mas não foi confirmado no remoto;
 - um arquivo em `Completed` foi enviado e confirmado remotamente;
 - somente arquivos em `Completed` participam da retenção local por idade.
+
+Todo archive de banco contém `manifest.json`, que descreve status, execução,
+estratégia, arquivos e erros. Ele documenta o conteúdo; o estado operacional de
+upload continua sendo representado pelos diretórios `Pending` e `Completed`.
 
 Os valores de retenção são inteiros de pelo menos um dia. O timestamp usado para
 avaliar a idade de archives e logs vem do nome controlado do arquivo, não de
@@ -68,7 +80,14 @@ Os nomes usam UTC e são únicos:
 
 ```text
 BackupSeven_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_<Database|Fiscal>_<run-id>.7z
+BackupSeven_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_Database_<run-id>_DEGRADED.7z
+BackupSeven_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_Database_<run-id>_GRANULAR_DEGRADED.7z
 ```
+
+O primeiro nome representa o fluxo normal. Quando o dump normal falha, o
+segundo guarda o dump geral com `--force`; o terceiro guarda os dumps por tabela
+e view e os marcadores `_FAILED.txt`. Um fallback só é considerado completo
+quando ambos são criados, validados e confirmados remotamente.
 
 Os objetos remotos usam o mesmo nome em:
 
@@ -137,6 +156,7 @@ Os exit codes são intencionalmente poucos e estáveis:
 | 2 | Chamada, configuração, dependência, diretório ou permissão inválida. |
 | 3 | Outra execução do BackupSeven detém o bloqueio. |
 | 4 | Os backups tiveram sucesso, mas a limpeza ou retenção falhou. |
+| 5 | O fallback completo do banco foi publicado como `DEGRADED`. |
 
 ## Contrato de agendamento
 

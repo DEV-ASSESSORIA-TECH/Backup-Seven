@@ -7,8 +7,10 @@ meio do rclone e mantém retenção local por idade.
 
 ## O que a aplicação faz
 
-- Executa o mysqldump sem colocar a senha na linha de comando.
-- Valida exit code e conteúdo não vazio do dump.
+- Executa `mysql.exe` e `mysqldump.exe` sem colocar a senha na linha de comando.
+- Valida exit code e conteúdo não vazio do dump e gera um manifesto JSON.
+- Se o dump normal falhar, preserva um dump com `--force` e tenta cada tabela e
+  view separadamente.
 - Cria e testa archives `.7z` antes do envio.
 - Executa os modos independentes `Database`, `Fiscal` e `Full`.
 - Envia cada arquivo com `rclone copyto` e confirma com `rclone check`.
@@ -17,7 +19,7 @@ meio do rclone e mantém retenção local por idade.
 - Nunca executa `rclone sync` nem remove objetos remotos.
 - Impede duas execuções simultâneas por meio de um lock local.
 
-PowerShell 7, 7-Zip, rclone e mysqldump são dependências externas. Nenhum desses
+PowerShell 7, 7-Zip, rclone, mysql e mysqldump são dependências externas. Nenhum desses
 executáveis é incluído no pacote.
 
 ## Conteúdo do pacote
@@ -48,7 +50,7 @@ Instale ou confirme:
 - PowerShell 7;
 - 7-Zip;
 - rclone;
-- mysqldump compatível com o servidor MySQL do Seven;
+- `mysql.exe` e `mysqldump.exe` compatíveis com o servidor MySQL do Seven;
 - bucket S3 `assessoriatech-backups-seven-prod` já criado;
 - conta Windows para executar a tarefa agendada sem usuário conectado.
 
@@ -58,6 +60,7 @@ Caminhos esperados inicialmente:
 C:\Program Files\PowerShell\7\pwsh.exe
 C:\Program Files\7-Zip\7z.exe
 C:\Program Files\MySQL\MySQL Server 5.5\bin\mysqldump.exe
+C:\Program Files\MySQL\MySQL Server 5.5\bin\mysql.exe
 C:\Program Files\rclone\rclone.exe
 ```
 
@@ -85,7 +88,7 @@ C:\TI\Scripts\BackupSeven\
 └── VERSION
 ```
 
-O script criará `Runtime` e `Logs` na primeira execução.
+O script criará `Runtime`, `Completed` e `Logs` na primeira execução.
 
 ## 3. Configuração principal
 
@@ -98,6 +101,7 @@ dados conhecidos da instalação atual:
 
     Tools = @{
         MySqlDump = 'C:\Program Files\MySQL\MySQL Server 5.5\bin\mysqldump.exe'
+        MySql     = 'C:\Program Files\MySQL\MySQL Server 5.5\bin\mysql.exe'
         SevenZip   = 'C:\Program Files\7-Zip\7z.exe'
         Rclone     = 'C:\Program Files\rclone\rclone.exe'
     }
@@ -126,6 +130,7 @@ dados conhecidos da instalação atual:
 
     Paths = @{
         RuntimeRoot = 'C:\TI\Scripts\BackupSeven\Runtime'
+        CompletedRoot = 'C:\TI\Scripts\BackupSeven\Completed'
         LogRoot     = 'C:\TI\Scripts\BackupSeven\Logs'
     }
 
@@ -165,8 +170,9 @@ O arquivo contém a senha em texto legível. Restrinja suas permissões NTFS à
 conta da tarefa agendada e aos administradores autorizados. Não coloque a senha
 em `config.psd1`, `Database.ExtraArguments`, scripts ou argumentos da tarefa.
 
-O BackupSeven passa o arquivo ao mysqldump por `--defaults-extra-file`, rejeita
-senhas nos argumentos adicionais e não registra seu conteúdo no log.
+O BackupSeven passa o arquivo ao mysql e ao mysqldump por
+`--defaults-extra-file`, rejeita senhas e `--force` nos argumentos adicionais e
+não registra o conteúdo do arquivo de credenciais no log.
 
 ## 5. Configuração do rclone e S3
 
@@ -239,7 +245,7 @@ impede a tentativa do Fiscal, mas o resultado geral será uma falha.
 Após os testes, confirme:
 
 - exit code `0`;
-- archive presente em `Runtime\Completed`;
+- archive presente em `Completed\Database` ou `Completed\Fiscal`;
 - nenhum archive em `Runtime\Pending`;
 - arquivo legível em `Logs`;
 - archive e log presentes no S3;
@@ -251,9 +257,12 @@ Localmente:
 
 ```text
 C:\TI\Scripts\BackupSeven\
+├── Completed\
+│   ├── Database\
+│   │   └── BackupSeven_2026-09-01_143000Z_MULTI-COPIAS_Database_a1b2c3d4.7z
+│   └── Fiscal\
 ├── Runtime\
 │   ├── Pending\
-│   ├── Completed\
 │   ├── Work\
 │   └── BackupSeven.lock
 └── Logs\
@@ -279,6 +288,29 @@ a hora local vigente do servidor no formato `yyyy-MM-dd HH:mm:ss`, por exemplo:
 ```text
 2026-09-04 13:44:45 [INFO] [e5f6a7b8...] [Fiscal/Upload] mensagem
 ```
+
+### Recuperação degradada do banco
+
+Todo archive de banco contém `manifest.json`. No fluxo normal, seu status é
+`SUCCESS` e o archive também contém o dump geral. Se esse dump falhar, o
+BackupSeven executa um novo dump com `--force` e tenta todas as tabelas e views
+individualmente. O resultado completo do fallback produz:
+
+```text
+Completed\Database\
+├── BackupSeven_<...>_Database_<run>_DEGRADED.7z
+└── BackupSeven_<...>_Database_<run>_GRANULAR_DEGRADED.7z
+```
+
+O primeiro contém o SQL geral recuperável. O segundo contém
+`Granular\<banco>\<objeto>.sql`; objetos que falharam recebem
+`<objeto>_FAILED.txt` com nome, tipo, erro e timestamp. Os dois archives contêm
+o mesmo manifesto `DEGRADED`, com os resultados e exit codes. Eles continuam
+sendo armazenados no prefixo diário normal do banco no S3.
+
+Um fallback completo e publicado retorna exit code `5`. Se apenas parte puder
+ser criada ou publicada, o material válido é preservado, mas a execução retorna
+`1`. Archives cujo upload não foi confirmado permanecem em `Runtime\Pending`.
 
 ## 8. Compactação e uso de processador
 
@@ -426,6 +458,7 @@ Register-ScheduledTask `
 | 2 | Configuração, dependência, caminho ou permissão inválida. |
 | 3 | Outra execução do BackupSeven já está ativa. |
 | 4 | Backups concluídos, mas limpeza ou retenção falhou. |
+| 5 | Os dois archives de recuperação degradada do banco foram publicados; requer atenção operacional. |
 
 Ao investigar uma falha:
 
@@ -448,7 +481,13 @@ Secrets\mysql-backup.cnf
 Secrets\rclone.conf
 Runtime\
 Logs\
+Completed\
 ```
+
+Ao adotar esta versão, adicione `Tools.MySql` e `Paths.CompletedRoot` ao arquivo
+de configuração existente. A aplicação não move automaticamente os archives
+antigos de `Runtime\Completed`; faça essa migração manualmente antes de remover
+a pasta antiga.
 
 Compare o novo modelo com a configuração existente e substitua somente scripts,
 módulos, README e VERSION. Credenciais reais nunca devem ser copiadas de volta

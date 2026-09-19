@@ -4,6 +4,21 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [Não lançado]
+
+### Adicionado
+
+- Manifesto JSON em todos os backups do banco.
+- Recuperação degradada com dump geral `--force`, dump individual de tabelas e
+  views, marcadores `_FAILED.txt` e exit code `5`.
+- Configuração explícita de `mysql.exe` para enumeração dos objetos do banco.
+
+### Alterado
+
+- Archives confirmados agora ficam diretamente em `Completed\Database` e
+  `Completed\Fiscal`, fora de `Runtime` e sem hierarquia local de ano e mês.
+- A hierarquia diária do S3 e a fila `Runtime\Pending` permanecem inalteradas.
+
 ## [0.2.1] - 2026-09-08
 
 ### Adicionado
