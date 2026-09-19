@@ -22,7 +22,22 @@ internal static class FakeExternalTool
         if (args.Length > 0 && args[0] == "a")
         {
             var archivePath = args.Skip(1).First(argument => !argument.StartsWith("-"));
-            File.WriteAllText(archivePath, "fake archive");
+            var sourcePath = args.Last();
+            var sourceRoot = sourcePath.TrimEnd('*', Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (Directory.Exists(sourceRoot))
+            {
+                var entries = Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories)
+                    .Select(path => "ENTRY:" + path.Substring(sourceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Replace('\\', '/') + Environment.NewLine + File.ReadAllText(path));
+                File.WriteAllText(archivePath, string.Join(Environment.NewLine, entries));
+            }
+            else if (File.Exists(sourcePath))
+            {
+                File.WriteAllText(archivePath, File.ReadAllText(sourcePath));
+            }
+            else
+            {
+                File.WriteAllText(archivePath, "fake archive");
+            }
             return ExitCode("BACKUPSEVEN_FAKE_7ZIP_CREATE_EXIT");
         }
 
@@ -44,6 +59,11 @@ internal static class FakeExternalTool
                 return ExitCode("BACKUPSEVEN_FAKE_RCLONE_LOG_COPY_EXIT");
             }
 
+            var failMatch = Environment.GetEnvironmentVariable("BACKUPSEVEN_FAKE_RCLONE_FAIL_MATCH");
+            if (!string.IsNullOrWhiteSpace(failMatch) && args.Any(argument => argument.IndexOf(failMatch, StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return 1;
+            }
             return ExitCode("BACKUPSEVEN_FAKE_RCLONE_COPY_EXIT");
         }
 
@@ -72,8 +92,34 @@ internal static class FakeExternalTool
             return ExitCode("BACKUPSEVEN_FAKE_MYSQL_EXIT");
         }
 
+        var isForceDump = args.Any(argument => argument == "--force");
+        var isGeneralDump = args.Any(argument => argument == "--databases");
+        var databaseObject = isGeneralDump ? null : args.LastOrDefault();
+        var failedObject = Environment.GetEnvironmentVariable("BACKUPSEVEN_FAKE_MYSQLDUMP_FAILED_OBJECT");
+
         Console.WriteLine("-- BackupSeven fake database dump");
         Console.WriteLine("CREATE DATABASE `seven`;");
-        return ExitCode("BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT");
+        if (!string.IsNullOrWhiteSpace(databaseObject))
+        {
+            Console.WriteLine("-- Object: " + databaseObject);
+        }
+
+        if (!string.IsNullOrWhiteSpace(failedObject) && string.Equals(databaseObject, failedObject, StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine("Table '.\\seven\\" + databaseObject + "' is marked as crashed and should be repaired (145)");
+            return 2;
+        }
+        if (isForceDump)
+        {
+            return ExitCode("BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT");
+        }
+        if (!isGeneralDump)
+        {
+            return 0;
+        }
+        var normalExit = Environment.GetEnvironmentVariable("BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT");
+        return string.IsNullOrWhiteSpace(normalExit)
+            ? ExitCode("BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT")
+            : ExitCode("BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT");
     }
 }

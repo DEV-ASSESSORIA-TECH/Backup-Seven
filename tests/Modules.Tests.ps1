@@ -37,7 +37,11 @@ AfterAll {
         'BACKUPSEVEN_FAKE_RCLONE_LIST_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_COPY_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT',
+        'BACKUPSEVEN_FAKE_RCLONE_FAIL_MATCH',
         'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_FAILED_OBJECT',
         'BACKUPSEVEN_FAKE_MYSQL_EXIT',
         'BACKUPSEVEN_FAKE_MYSQL_OBJECTS',
         'BACKUPSEVEN_FAKE_INVOCATION_LOG'
@@ -103,6 +107,17 @@ Context 'Archive module' {
 
         $env:BACKUPSEVEN_FAKE_7ZIP_TEST_EXIT = $null
     }
+
+    It 'archives directory contents without the staging directory name' {
+        $source = Join-Path $script:TestRoot 'manifest-source'
+        $archive = Join-Path $script:TestRoot 'contents.7z'
+        $null = New-Item -ItemType Directory -Path $source
+        Set-Content -LiteralPath (Join-Path $source 'manifest.json') -Value '{"status":"SUCCESS"}'
+
+        $null = New-SevenArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive -ContentsOnly
+
+        Get-Content -LiteralPath $archive -Raw | Should -Match 'ENTRY:manifest\.json'
+    }
 }
 
 Context 'Database module' {
@@ -150,6 +165,23 @@ Context 'Database module' {
         $objects.Count | Should -Be 3
         $objects[0].Name | Should -Be 'clientes'
         $objects[2].ObjectType | Should -Be 'VIEW'
+    }
+
+    It 'preserves a non-empty forced dump with a non-zero exit code' {
+        $dump = Join-Path $script:TestRoot 'degraded.sql'
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT = '2'
+
+        $result = Invoke-SevenDatabaseDump `
+            -MySqlDumpPath $script:MySqlDump `
+            -DefaultsExtraFile $script:DefaultsFile `
+            -DatabaseName seven `
+            -OutputPath $dump `
+            -Force
+
+        $result.ExitCode | Should -Be 2
+        $result.IsNonEmpty | Should -BeTrue
+        Test-Path -LiteralPath $dump | Should -BeTrue
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT = $null
     }
 
     It 'normalizes unsafe and colliding object file names' {

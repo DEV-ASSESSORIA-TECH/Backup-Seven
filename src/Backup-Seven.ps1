@@ -246,7 +246,7 @@ function New-ArtifactInfo {
 function Get-ArtifactDateInfo {
     param([Parameter(Mandatory)][string] $FileName)
 
-    if ($FileName -notmatch '^BackupSeven_(?<date>\d{4}-\d{2}-\d{2})_(?<time>\d{6})Z_[A-Za-z0-9][A-Za-z0-9_-]*_(Database|Fiscal)_[A-Fa-f0-9]{8}\.7z$') {
+    if ($FileName -notmatch '^BackupSeven_(?<date>\d{4}-\d{2}-\d{2})_(?<time>\d{6})Z_[A-Za-z0-9][A-Za-z0-9_-]*_(Database|Fiscal)_[A-Fa-f0-9]{8}(?:_(?:DEGRADED|GRANULAR_DEGRADED))?\.7z$') {
         throw "Backup file name does not follow the artifact contract: $FileName"
     }
 
@@ -379,6 +379,219 @@ function Invoke-PendingRetry {
     return $succeeded
 }
 
+function ConvertTo-ManifestError {
+    param([AllowNull()][string] $Message)
+
+    if ([string]::IsNullOrWhiteSpace($Message)) { return '' }
+    $sanitized = $Message -replace '(?i)(password\s*[=:]\s*)\S+', '$1[REDACTED]'
+    return ($sanitized -replace '[\r\n]+', ' ').Trim()
+}
+
+function Write-DatabaseManifest {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Manifest,
+        [Parameter(Mandatory)][string[]] $Directories
+    )
+
+    $json = $Manifest | ConvertTo-Json -Depth 12
+    foreach ($directory in $Directories) {
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        Set-Content -LiteralPath (Join-Path $directory 'manifest.json') -Value $json -Encoding utf8
+    }
+}
+
+function Publish-DatabaseWorkArchive {
+    param(
+        [Parameter(Mandatory)][string] $WorkArchivePath,
+        [Parameter(Mandatory)][pscustomobject] $Artifact,
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Configuration,
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Layout
+    )
+
+    $pendingDirectory = Join-Path (Join-Path (Join-Path $Layout.Pending 'Database') $Artifact.Year) $Artifact.Month
+    $null = New-Item -ItemType Directory -Path $pendingDirectory -Force
+    $pendingPath = Join-Path $pendingDirectory ([System.IO.Path]::GetFileName($WorkArchivePath))
+    Move-Item -LiteralPath $WorkArchivePath -Destination $pendingPath -ErrorAction Stop
+    Publish-BackupArchive -Archive (Get-Item -LiteralPath $pendingPath) -BackupType Database -Configuration $Configuration -Layout $Layout
+}
+
+function Invoke-DegradedDatabaseBackup {
+    param(
+        [Parameter(Mandatory)][string] $RunId,
+        [Parameter(Mandatory)][pscustomobject] $Artifact,
+        [Parameter(Mandatory)][datetime] $StartedAtUtc,
+        [Parameter(Mandatory)][string] $InitialError,
+        [AllowNull()][Nullable[int]] $InitialExitCode,
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Configuration,
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Layout,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $ExtraArguments
+    )
+
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Artifact.FileName)
+    $generalArchiveName = "${baseName}_DEGRADED.7z"
+    $granularArchiveName = "${baseName}_GRANULAR_DEGRADED.7z"
+    $generalDirectory = Join-Path $Layout.Work 'DatabaseDegraded'
+    $granularDirectory = Join-Path $Layout.Work 'DatabaseGranular'
+    $databaseDirectoryName = Get-SevenSafeFileName -Name ([string] $Configuration.Database.Name)
+    $granularDatabaseDirectory = Join-Path (Join-Path $granularDirectory 'Granular') $databaseDirectoryName
+    $null = New-Item -ItemType Directory -Path $generalDirectory, $granularDatabaseDirectory -Force
+
+    $generalDumpPath = Join-Path $generalDirectory "${baseName}_DEGRADED.sql"
+    Write-BackupLog -Level WARN -Stage 'Database/Degraded' -Message 'Normal dump failed; starting general dump with --force and granular recovery.'
+    $generalResult = Invoke-SevenDatabaseDump `
+        -MySqlDumpPath $Configuration.Tools.MySqlDump `
+        -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile `
+        -DatabaseName $Configuration.Database.Name `
+        -OutputPath $generalDumpPath `
+        -ExtraArguments $ExtraArguments `
+        -Force
+    if (-not $generalResult.IsNonEmpty -and (Test-Path -LiteralPath $generalDumpPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $generalDumpPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $objectResults = @()
+    $listingError = ''
+    $listingSucceeded = $false
+    try {
+        $objects = @(Get-SevenDatabaseObject `
+                -MySqlPath $Configuration.Tools.MySql `
+                -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile `
+                -DatabaseName $Configuration.Database.Name)
+        $listingSucceeded = $true
+        $usedNames = @{}
+        foreach ($object in $objects) {
+            $safeName = Get-SevenSafeFileName -Name $object.Name -UsedNames $usedNames
+            $objectDumpPath = Join-Path $granularDatabaseDirectory "$safeName.sql"
+            $timestamp = [DateTime]::UtcNow
+            Write-BackupLog -Level INFO -Stage 'Database/Granular' -Message "Dumping $($object.ObjectType) '$($Configuration.Database.Name).$($object.Name)'."
+            try {
+                $result = Invoke-SevenDatabaseDump `
+                    -MySqlDumpPath $Configuration.Tools.MySqlDump `
+                    -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile `
+                    -DatabaseName $Configuration.Database.Name `
+                    -DatabaseObject $object.Name `
+                    -OutputPath $objectDumpPath `
+                    -ExtraArguments $ExtraArguments
+                if ($result.ExitCode -eq 0 -and $result.IsNonEmpty) {
+                    $objectResults += [ordered]@{
+                        name = $object.Name; objectType = $object.ObjectType; status = 'SUCCESS'
+                        file = "Granular/$databaseDirectoryName/$safeName.sql"; sizeBytes = $result.Length
+                        exitCode = $result.ExitCode; error = ''
+                    }
+                }
+                else {
+                    if (Test-Path -LiteralPath $objectDumpPath -PathType Leaf) { Remove-Item -LiteralPath $objectDumpPath -Force }
+                    $errorMessage = ConvertTo-ManifestError -Message $result.StdErr
+                    if ([string]::IsNullOrWhiteSpace($errorMessage)) { $errorMessage = "mysqldump failed with exit code $($result.ExitCode)." }
+                    $failedPath = Join-Path $granularDatabaseDirectory "${safeName}_FAILED.txt"
+                    @(
+                        "Table: $($Configuration.Database.Name).$($object.Name)"
+                        "ObjectType: $($object.ObjectType)"
+                        "Error: $errorMessage"
+                        "Timestamp: $($timestamp.ToString('o'))"
+                    ) | Set-Content -LiteralPath $failedPath -Encoding utf8
+                    $objectResults += [ordered]@{
+                        name = $object.Name; objectType = $object.ObjectType; status = 'FAILED'
+                        file = "Granular/$databaseDirectoryName/${safeName}_FAILED.txt"; sizeBytes = (Get-Item $failedPath).Length
+                        exitCode = $result.ExitCode; error = $errorMessage
+                    }
+                    Write-BackupLog -Level WARN -Stage 'Database/Granular' -Message "$($Configuration.Database.Name).$($object.Name) failed: $errorMessage"
+                }
+            }
+            catch {
+                if (Test-Path -LiteralPath $objectDumpPath -PathType Leaf) { Remove-Item -LiteralPath $objectDumpPath -Force -ErrorAction SilentlyContinue }
+                $errorMessage = ConvertTo-ManifestError -Message $_.Exception.Message
+                $failedPath = Join-Path $granularDatabaseDirectory "${safeName}_FAILED.txt"
+                @(
+                    "Table: $($Configuration.Database.Name).$($object.Name)"
+                    "ObjectType: $($object.ObjectType)"
+                    "Error: $errorMessage"
+                    "Timestamp: $($timestamp.ToString('o'))"
+                ) | Set-Content -LiteralPath $failedPath -Encoding utf8
+                $objectResults += [ordered]@{
+                    name = $object.Name; objectType = $object.ObjectType; status = 'FAILED'
+                    file = "Granular/$databaseDirectoryName/${safeName}_FAILED.txt"; sizeBytes = (Get-Item $failedPath).Length
+                    exitCode = $null; error = $errorMessage
+                }
+                Write-BackupLog -Level WARN -Stage 'Database/Granular' -Message "$($Configuration.Database.Name).$($object.Name) failed: $errorMessage"
+            }
+        }
+    }
+    catch {
+        $listingError = ConvertTo-ManifestError -Message $_.Exception.Message
+        Write-BackupLog -Level ERROR -Stage 'Database/Granular' -Message $listingError
+    }
+
+    $generalError = ConvertTo-ManifestError -Message $generalResult.StdErr
+    $failedTableMatches = @([regex]::Matches($generalError, '(?i)(?:table|view)[^`]*`(?<name>[^`]+)`') | ForEach-Object { $_.Groups['name'].Value } | Select-Object -Unique)
+    $manifest = [ordered]@{
+        schemaVersion = 1
+        status = 'DEGRADED'
+        instanceName = [string] $Configuration.InstanceName
+        databaseName = [string] $Configuration.Database.Name
+        runId = $RunId
+        startedAtUtc = $StartedAtUtc.ToString('o')
+        completedAtUtc = [DateTime]::UtcNow.ToString('o')
+        strategy = 'force+granular'
+        archives = @(
+            [ordered]@{ role = 'GENERAL'; fileName = $generalArchiveName }
+            [ordered]@{ role = 'GRANULAR'; fileName = $granularArchiveName }
+        )
+        initialFailure = [ordered]@{ exitCode = $InitialExitCode; error = (ConvertTo-ManifestError -Message $InitialError) }
+        generalDump = [ordered]@{
+            file = if ($generalResult.IsNonEmpty) { [System.IO.Path]::GetFileName($generalDumpPath) } else { $null }
+            sizeBytes = $generalResult.Length
+            exitCode = $generalResult.ExitCode
+            error = $generalError
+            referencedObjects = $failedTableMatches
+        }
+        granular = [ordered]@{
+            listingSucceeded = $listingSucceeded
+            listingError = $listingError
+            objects = $objectResults
+        }
+    }
+    $manifestDirectories = @($generalDirectory)
+    if ($listingSucceeded) { $manifestDirectories += $granularDirectory }
+    Write-DatabaseManifest -Manifest $manifest -Directories $manifestDirectories
+
+    $errors = @()
+    $publishedRoles = @()
+    if ($generalResult.IsNonEmpty) {
+        $generalArchivePath = Join-Path $Layout.Work $generalArchiveName
+        try {
+            $null = New-SevenArchive -SevenZipPath $Configuration.Tools.SevenZip -SourcePath $generalDirectory -ArchivePath $generalArchivePath `
+                -CompressionLevel ([int] $Configuration.Archive.CompressionLevel) -CpuLimitPercent ([int] $Configuration.Archive.CpuLimitPercent) -ContentsOnly
+            Publish-DatabaseWorkArchive -WorkArchivePath $generalArchivePath -Artifact $Artifact -Configuration $Configuration -Layout $Layout
+            $publishedRoles += 'GENERAL'
+        }
+        catch { $errors += "General degraded archive: $($_.Exception.Message)" }
+    }
+    else {
+        $errors += 'General dump with --force was empty.'
+    }
+
+    if ($listingSucceeded) {
+        $granularArchivePath = Join-Path $Layout.Work $granularArchiveName
+        try {
+            $null = New-SevenArchive -SevenZipPath $Configuration.Tools.SevenZip -SourcePath $granularDirectory -ArchivePath $granularArchivePath `
+                -CompressionLevel ([int] $Configuration.Archive.CompressionLevel) -CpuLimitPercent ([int] $Configuration.Archive.CpuLimitPercent) -ContentsOnly
+            Publish-DatabaseWorkArchive -WorkArchivePath $granularArchivePath -Artifact $Artifact -Configuration $Configuration -Layout $Layout
+            $publishedRoles += 'GRANULAR'
+        }
+        catch { $errors += "Granular degraded archive: $($_.Exception.Message)" }
+    }
+    else {
+        $errors += "Granular enumeration failed: $listingError"
+    }
+
+    if ($publishedRoles.Count -eq 2) {
+        Write-BackupLog -Level WARN -Stage 'Database/Degraded' -Message "Degraded backup published as '$generalArchiveName' and '$granularArchiveName'."
+        return 'DEGRADED'
+    }
+    throw "Database fallback was incomplete. $($errors -join ' ')"
+}
+
 function Invoke-DatabaseBackup {
     param(
         [Parameter(Mandatory)][string] $RunId,
@@ -386,49 +599,61 @@ function Invoke-DatabaseBackup {
         [Parameter(Mandatory)][System.Collections.IDictionary] $Layout
     )
 
+    $startedAtUtc = [DateTime]::UtcNow
     $artifact = New-ArtifactInfo -InstanceName $Configuration.InstanceName -BackupType Database -RunId $RunId
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($artifact.FileName)
-    $dumpPath = Join-Path $Layout.Work "$baseName.sql"
+    $sourceDirectory = Join-Path $Layout.Work 'DatabaseNormal'
+    $dumpPath = Join-Path $sourceDirectory "$baseName.sql"
     $workArchivePath = Join-Path $Layout.Work $artifact.FileName
-    $pendingDirectory = Join-Path (Join-Path (Join-Path $Layout.Pending 'Database') $artifact.Year) $artifact.Month
-    $pendingPath = Join-Path $pendingDirectory $artifact.FileName
+    [string[]] $extraArguments = @()
+    if ($Configuration.Database.Contains('ExtraArguments') -and $null -ne $Configuration.Database.ExtraArguments) {
+        $extraArguments = @($Configuration.Database.ExtraArguments)
+    }
 
+    $normalResult = $null
+    $initialError = ''
+    $initialExitCode = $null
     try {
         Write-BackupLog -Level INFO -Stage 'Database/Dump' -Message "Creating database dump '$dumpPath'."
-        $extraArguments = @()
-        if ($Configuration.Database.Contains('ExtraArguments')) {
-            $extraArguments = @($Configuration.Database.ExtraArguments)
+        $normalResult = Invoke-SevenDatabaseDump -MySqlDumpPath $Configuration.Tools.MySqlDump `
+            -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile -DatabaseName $Configuration.Database.Name `
+            -OutputPath $dumpPath -ExtraArguments $extraArguments
+        $initialExitCode = $normalResult.ExitCode
+        if ($normalResult.ExitCode -ne 0) {
+            $initialError = "mysqldump failed with exit code $($normalResult.ExitCode). $($normalResult.StdErr)"
         }
-
-        $null = New-SevenDatabaseDump `
-            -MySqlDumpPath $Configuration.Tools.MySqlDump `
-            -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile `
-            -DatabaseName $Configuration.Database.Name `
-            -OutputPath $dumpPath `
-            -ExtraArguments $extraArguments
-
-        Write-BackupLog -Level INFO -Stage 'Database/Archive' -Message "Creating archive '$workArchivePath'."
-        $null = New-SevenArchive `
-            -SevenZipPath $Configuration.Tools.SevenZip `
-            -SourcePath $dumpPath `
-            -ArchivePath $workArchivePath `
-            -CompressionLevel ([int] $Configuration.Archive.CompressionLevel) `
-            -CpuLimitPercent ([int] $Configuration.Archive.CpuLimitPercent)
-
-        $null = New-Item -ItemType Directory -Path $pendingDirectory -Force
-        Move-Item -LiteralPath $workArchivePath -Destination $pendingPath -ErrorAction Stop
+        elseif (-not $normalResult.IsNonEmpty) {
+            $initialError = "mysqldump created an empty dump: $dumpPath"
+        }
     }
-    finally {
+    catch {
+        $initialError = $_.Exception.Message
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($initialError)) {
         if (Test-Path -LiteralPath $dumpPath -PathType Leaf) {
-            Remove-Item -LiteralPath $dumpPath -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $dumpPath -Force -ErrorAction SilentlyContinue
         }
+        return Invoke-DegradedDatabaseBackup -RunId $RunId -Artifact $artifact -StartedAtUtc $startedAtUtc `
+            -InitialError $initialError -InitialExitCode $initialExitCode -Configuration $Configuration -Layout $Layout -ExtraArguments $extraArguments
     }
+    $dump = $normalResult.File
 
-    Publish-BackupArchive `
-        -Archive (Get-Item -LiteralPath $pendingPath) `
-        -BackupType Database `
-        -Configuration $Configuration `
-        -Layout $Layout
+    $manifest = [ordered]@{
+        schemaVersion = 1; status = 'SUCCESS'; instanceName = [string] $Configuration.InstanceName
+        databaseName = [string] $Configuration.Database.Name; runId = $RunId
+        startedAtUtc = $startedAtUtc.ToString('o'); completedAtUtc = [DateTime]::UtcNow.ToString('o')
+        strategy = 'normal'
+        archives = @([ordered]@{ role = 'GENERAL'; fileName = $artifact.FileName })
+        dumps = @([ordered]@{ name = [string] $Configuration.Database.Name; objectType = 'DATABASE'; status = 'SUCCESS'; file = $dump.Name; sizeBytes = $dump.Length; exitCode = 0; error = '' })
+    }
+    Write-DatabaseManifest -Manifest $manifest -Directories @($sourceDirectory)
+
+    Write-BackupLog -Level INFO -Stage 'Database/Archive' -Message "Creating archive '$workArchivePath'."
+    $null = New-SevenArchive -SevenZipPath $Configuration.Tools.SevenZip -SourcePath $sourceDirectory -ArchivePath $workArchivePath `
+        -CompressionLevel ([int] $Configuration.Archive.CompressionLevel) -CpuLimitPercent ([int] $Configuration.Archive.CpuLimitPercent) -ContentsOnly
+    Publish-DatabaseWorkArchive -WorkArchivePath $workArchivePath -Artifact $artifact -Configuration $Configuration -Layout $Layout
+    return 'SUCCESS'
 }
 
 function Invoke-FiscalBackup {
@@ -586,6 +811,7 @@ function Invoke-BackupSeven {
         $storageValidated = $true
 
         $operationSucceeded = $true
+        $operationDegraded = $false
         foreach ($backupType in $backupTypes) {
             if (-not (Invoke-PendingRetry -BackupType $backupType -Configuration $configuration -Layout $layout)) {
                 $operationSucceeded = $false
@@ -596,13 +822,19 @@ function Invoke-BackupSeven {
             $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
             try {
                 if ($backupType -eq 'Database') {
-                    Invoke-DatabaseBackup -RunId $runId -Configuration $configuration -Layout $layout
+                    $databaseStatus = Invoke-DatabaseBackup -RunId $runId -Configuration $configuration -Layout $layout
+                    if ($databaseStatus -eq 'DEGRADED') {
+                        $operationDegraded = $true
+                        Write-BackupLog -Level WARN -Stage 'Database/Complete' -Message "Pipeline completed as DEGRADED in $([math]::Round($stopwatch.Elapsed.TotalSeconds, 1)) seconds."
+                    }
+                    else {
+                        Write-BackupLog -Level INFO -Stage 'Database/Complete' -Message "Pipeline completed in $([math]::Round($stopwatch.Elapsed.TotalSeconds, 1)) seconds."
+                    }
                 }
                 else {
                     Invoke-FiscalBackup -RunId $runId -Configuration $configuration -Layout $layout
+                    Write-BackupLog -Level INFO -Stage 'Fiscal/Complete' -Message "Pipeline completed in $([math]::Round($stopwatch.Elapsed.TotalSeconds, 1)) seconds."
                 }
-
-                Write-BackupLog -Level INFO -Stage "$backupType/Complete" -Message "Pipeline completed in $([math]::Round($stopwatch.Elapsed.TotalSeconds, 1)) seconds."
             }
             catch {
                 $operationSucceeded = $false
@@ -630,9 +862,17 @@ function Invoke-BackupSeven {
             Write-BackupLog -Level ERROR -Stage 'Complete' -Message 'Execution completed with backup or upload failures.'
             $exitCode = 1
         }
+        elseif (-not $maintenanceSucceeded -and $operationDegraded) {
+            Write-BackupLog -Level ERROR -Stage 'Complete' -Message 'A degraded backup was published, but cleanup or retention also failed.'
+            $exitCode = 1
+        }
         elseif (-not $maintenanceSucceeded) {
             Write-BackupLog -Level ERROR -Stage 'Complete' -Message 'Backups completed, but cleanup or retention failed.'
             $exitCode = 4
+        }
+        elseif ($operationDegraded) {
+            Write-BackupLog -Level WARN -Stage 'Complete' -Message 'Execution completed with a published DEGRADED database backup.'
+            $exitCode = 5
         }
         else {
             Write-BackupLog -Level INFO -Stage 'Complete' -Message 'Execution completed successfully.'

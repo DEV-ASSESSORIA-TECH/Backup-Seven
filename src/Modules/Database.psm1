@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 
-function Assert-SevenDatabaseArguments {
-    param([string[]] $ExtraArguments)
+function Assert-SevenDatabaseArgument {
+    param([AllowEmptyCollection()][string[]] $ExtraArguments)
 
     foreach ($argument in $ExtraArguments) {
         if ($argument -match '^(--password(?:=|$)|-p.+)') {
@@ -93,7 +93,7 @@ function Invoke-SevenDatabaseDump {
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DefaultsExtraFile,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DatabaseName,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $OutputPath,
-        [string[]] $ExtraArguments = @(),
+        [AllowEmptyCollection()][string[]] $ExtraArguments = @(),
         [string] $DatabaseObject,
         [switch] $Force
     )
@@ -101,7 +101,7 @@ function Invoke-SevenDatabaseDump {
     if (-not (Test-Path -LiteralPath $DefaultsExtraFile -PathType Leaf)) {
         throw "MySQL defaults file was not found: $DefaultsExtraFile"
     }
-    Assert-SevenDatabaseArguments -ExtraArguments $ExtraArguments
+    Assert-SevenDatabaseArgument -ExtraArguments $ExtraArguments
 
     $arguments = @("--defaults-extra-file=$DefaultsExtraFile", '--single-transaction', '--quick')
     if ([string]::IsNullOrWhiteSpace($DatabaseObject)) {
@@ -136,7 +136,7 @@ function New-SevenDatabaseDump {
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DefaultsExtraFile,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DatabaseName,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $OutputPath,
-        [string[]] $ExtraArguments = @()
+        [AllowEmptyCollection()][string[]] $ExtraArguments = @()
     )
 
     try {

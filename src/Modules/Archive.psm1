@@ -71,7 +71,9 @@ function New-SevenArchive {
         [int] $CompressionLevel = 5,
 
         [ValidateRange(1, 100)]
-        [int] $CpuLimitPercent = 50
+        [int] $CpuLimitPercent = 50,
+
+        [switch] $ContentsOnly
     )
 
     if (-not (Test-Path -LiteralPath $SourcePath)) {
@@ -96,6 +98,10 @@ function New-SevenArchive {
         1,
         [Math]::Floor([Environment]::ProcessorCount * ($CpuLimitPercent / 100.0))
     )
+    $archiveSource = $SourcePath
+    if ($ContentsOnly -and (Test-Path -LiteralPath $SourcePath -PathType Container)) {
+        $archiveSource = Join-Path $SourcePath '*'
+    }
     $arguments = @(
         'a'
         '-t7z'
@@ -103,7 +109,7 @@ function New-SevenArchive {
         "-mmt=$threadCount"
         '-y'
         $ArchivePath
-        $SourcePath
+        $archiveSource
     )
 
     try {

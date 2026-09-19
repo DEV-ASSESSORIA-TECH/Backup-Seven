@@ -103,7 +103,11 @@ AfterEach {
         'BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_LOG_COPY_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_LOG_CHECK_EXIT',
+        'BACKUPSEVEN_FAKE_RCLONE_FAIL_MATCH',
         'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQLDUMP_FAILED_OBJECT',
         'BACKUPSEVEN_FAKE_MYSQL_EXIT',
         'BACKUPSEVEN_FAKE_MYSQL_OBJECTS',
         'BACKUPSEVEN_FAKE_INVOCATION_LOG'
@@ -132,6 +136,9 @@ Context 'End-to-end orchestration' {
         $archive = Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File |
             Select-Object -First 1
         $archive.Name | Should -Match '^BackupSeven_\d{4}-\d{2}-\d{2}_\d{6}Z_TEST-SERVER_Database_[a-f0-9]{8}\.7z$'
+        $archiveContent = Get-Content -LiteralPath $archive.FullName -Raw
+        $archiveContent | Should -Match 'ENTRY:manifest\.json'
+        $archiveContent | Should -Match '"status":\s*"SUCCESS"'
 
         $logFiles = @(Get-ChildItem $script:Logs -Filter '*.log' -File)
         $logFiles.Count | Should -Be 1
@@ -178,13 +185,81 @@ Context 'End-to-end orchestration' {
         Get-Content -LiteralPath $logFiles[0].FullName -Raw | Should -Match 'rclone check failed'
     }
 
-    It 'continues Fiscal when Database fails in Full mode' {
-        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT = '2'
+    It 'publishes both degraded archives and returns exit code 5' {
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT = '2'
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT = '2'
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FAILED_OBJECT = 'produtos'
 
-        Invoke-TestBackup -Mode Full | Should -Be 1
+        $exitCode = Invoke-TestBackup -Mode Database
+        if ($exitCode -ne 5) {
+            throw "Degraded Database backup exited with $exitCode. $($script:LastBackupOutput -join [Environment]::NewLine)"
+        }
+        $exitCode | Should -Be 5
+
+        $archives = @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File)
+        $archives.Count | Should -Be 2
+        @($archives.Name | Where-Object { $_ -match '_DEGRADED\.7z$' }).Count | Should -Be 2
+        @($archives.Name | Where-Object { $_ -match '_GRANULAR_DEGRADED\.7z$' }).Count | Should -Be 1
+
+        $granularArchive = $archives | Where-Object Name -Match '_GRANULAR_DEGRADED\.7z$'
+        $granularContent = Get-Content -LiteralPath $granularArchive.FullName -Raw
+        $granularContent | Should -Match 'ENTRY:manifest\.json'
+        $granularContent | Should -Match 'Granular/seven/produtos_FAILED\.txt'
+        $granularContent | Should -Match 'marked as crashed and should be repaired \(145\)'
+        $granularContent | Should -Match '"objectType":\s*"VIEW"'
+
+        $logContent = Get-ChildItem $script:Logs -Filter '*.log' -File |
+            ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
+        $logContent -join [Environment]::NewLine | Should -Match '\[WARN\].*\[Database/Degraded\]'
+        $logContent -join [Environment]::NewLine | Should -Not -Match 'Execution completed successfully'
+    }
+
+    It 'preserves the general degraded archive and returns failure when enumeration fails' {
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT = '2'
+        $env:BACKUPSEVEN_FAKE_MYSQL_EXIT = '1'
+
+        $exitCode = Invoke-TestBackup -Mode Database
+        if ($exitCode -ne 1) {
+            throw "Partial degraded Database backup exited with $exitCode. $($script:LastBackupOutput -join [Environment]::NewLine)"
+        }
+        $exitCode | Should -Be 1
+
+        $archives = @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File)
+        $archives.Count | Should -Be 1
+        $archives[0].Name | Should -Match '_DEGRADED\.7z$'
+        $archives[0].Name | Should -Not -Match '_GRANULAR_DEGRADED\.7z$'
+    }
+
+    It 'keeps a failed degraded upload pending and retries it on the next run' {
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT = '2'
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT = '2'
+        $env:BACKUPSEVEN_FAKE_RCLONE_FAIL_MATCH = 'GRANULAR_DEGRADED'
+
+        Invoke-TestBackup -Mode Database | Should -Be 1
+        @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*_DEGRADED.7z' -File).Count | Should -Be 1
+        @(Get-ChildItem (Join-Path $script:Runtime 'Pending/Database') -Filter '*_GRANULAR_DEGRADED.7z' -File -Recurse).Count | Should -Be 1
+
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT = $null
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT = $null
+        $env:BACKUPSEVEN_FAKE_RCLONE_FAIL_MATCH = $null
+        Invoke-TestBackup -Mode Database | Should -Be 0
+
+        @(Get-ChildItem (Join-Path $script:Runtime 'Pending/Database') -Filter '*.7z' -File -Recurse).Count | Should -Be 0
+        @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File).Count | Should -Be 3
+    }
+
+    It 'continues Fiscal when the Database fallback is incomplete in Full mode' {
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT = '2'
+        $env:BACKUPSEVEN_FAKE_MYSQL_EXIT = '1'
+
+        $exitCode = Invoke-TestBackup -Mode Full
+        if ($exitCode -ne 1) {
+            throw "Full backup with incomplete Database fallback exited with $exitCode. $($script:LastBackupOutput -join [Environment]::NewLine)"
+        }
+        $exitCode | Should -Be 1
 
         @(Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File).Count |
-            Should -Be 0
+            Should -Be 1
         @(Get-ChildItem (Join-Path $script:Completed 'Fiscal') -Filter '*.7z' -File).Count |
             Should -Be 1
     }
