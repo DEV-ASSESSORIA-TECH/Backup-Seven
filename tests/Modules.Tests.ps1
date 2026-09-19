@@ -11,11 +11,13 @@ BeforeAll {
 
     $script:SevenZip = Join-Path $script:TestRoot '7z.exe'
     $script:MySqlDump = Join-Path $script:TestRoot 'mysqldump.exe'
+    $script:MySql = Join-Path $script:TestRoot 'mysql.exe'
     $script:Rclone = Join-Path $script:TestRoot 'rclone.exe'
     $script:InvocationLog = Join-Path $script:TestRoot 'tool-invocations.log'
     $env:BACKUPSEVEN_FAKE_INVOCATION_LOG = $script:InvocationLog
     Copy-Item $fakeTool $script:SevenZip
     Copy-Item $fakeTool $script:MySqlDump
+    Copy-Item $fakeTool $script:MySql
     Copy-Item $fakeTool $script:Rclone
 
     $script:DefaultsFile = Join-Path $script:TestRoot 'mysql.cnf'
@@ -36,6 +38,8 @@ AfterAll {
         'BACKUPSEVEN_FAKE_RCLONE_COPY_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT',
         'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQL_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQL_OBJECTS',
         'BACKUPSEVEN_FAKE_INVOCATION_LOG'
     )) {
         [Environment]::SetEnvironmentVariable($name, $null)
@@ -124,6 +128,38 @@ Context 'Database module' {
                 -DatabaseName seven `
                 -OutputPath $dump `
                 -ExtraArguments '--password=secret' } | Should -Throw '*must not contain a password*'
+    }
+
+    It 'rejects force in extra arguments' {
+        $dump = Join-Path $script:TestRoot 'force.sql'
+
+        { New-SevenDatabaseDump `
+                -MySqlDumpPath $script:MySqlDump `
+                -DefaultsExtraFile $script:DefaultsFile `
+                -DatabaseName seven `
+                -OutputPath $dump `
+                -ExtraArguments '--force' } | Should -Throw '*must not contain --force*'
+    }
+
+    It 'lists base tables and views' {
+        $objects = @(Get-SevenDatabaseObject `
+                -MySqlPath $script:MySql `
+                -DefaultsExtraFile $script:DefaultsFile `
+                -DatabaseName seven)
+
+        $objects.Count | Should -Be 3
+        $objects[0].Name | Should -Be 'clientes'
+        $objects[2].ObjectType | Should -Be 'VIEW'
+    }
+
+    It 'normalizes unsafe and colliding object file names' {
+        $used = @{}
+
+        Get-SevenSafeFileName -Name 'sales:2026' -UsedNames $used |
+            Should -Match '^sales_2026_[a-f0-9]{8}$'
+        Get-SevenSafeFileName -Name 'clientes' -UsedNames $used | Should -Be 'clientes'
+        Get-SevenSafeFileName -Name 'CLIENTES' -UsedNames $used |
+            Should -Match '^CLIENTES_[a-f0-9]{8}$'
     }
 }
 

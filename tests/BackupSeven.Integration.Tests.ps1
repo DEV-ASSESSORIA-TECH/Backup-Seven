@@ -46,9 +46,11 @@ BeforeEach {
     }
     $script:SevenZip = Join-Path $tools '7z.exe'
     $script:MySqlDump = Join-Path $tools 'mysqldump.exe'
+    $script:MySql = Join-Path $tools 'mysql.exe'
     $script:Rclone = Join-Path $tools 'rclone.exe'
     Copy-Item $fakeTool $script:SevenZip
     Copy-Item $fakeTool $script:MySqlDump
+    Copy-Item $fakeTool $script:MySql
     Copy-Item $fakeTool $script:Rclone
 
     $script:DefaultsFile = Join-Path $secrets 'mysql.cnf'
@@ -66,6 +68,7 @@ BeforeEach {
     InstanceName = 'TEST-SERVER'
     Tools = @{
         MySqlDump = $(ConvertTo-Psd1String $script:MySqlDump)
+        MySql = $(ConvertTo-Psd1String $script:MySql)
         SevenZip = $(ConvertTo-Psd1String $script:SevenZip)
         Rclone = $(ConvertTo-Psd1String $script:Rclone)
     }
@@ -101,6 +104,8 @@ AfterEach {
         'BACKUPSEVEN_FAKE_RCLONE_LOG_COPY_EXIT',
         'BACKUPSEVEN_FAKE_RCLONE_LOG_CHECK_EXIT',
         'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQL_EXIT',
+        'BACKUPSEVEN_FAKE_MYSQL_OBJECTS',
         'BACKUPSEVEN_FAKE_INVOCATION_LOG'
     )) {
         [Environment]::SetEnvironmentVariable($name, $null)

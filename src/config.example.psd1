@@ -4,6 +4,7 @@
 
     Tools = @{
         MySqlDump = 'C:\Program Files\MySQL\MySQL Server 5.5\bin\mysqldump.exe'
+        MySql     = 'C:\Program Files\MySQL\MySQL Server 5.5\bin\mysql.exe'
         SevenZip   = 'C:\Program Files\7-Zip\7z.exe'
         Rclone     = 'C:\Program Files\rclone\rclone.exe'
     }

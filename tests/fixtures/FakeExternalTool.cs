@@ -57,6 +57,21 @@ internal static class FakeExternalTool
             return ExitCode("BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT");
         }
 
+        var executableName = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]);
+        if (string.Equals(executableName, "mysql", StringComparison.OrdinalIgnoreCase))
+        {
+            var rows = Environment.GetEnvironmentVariable("BACKUPSEVEN_FAKE_MYSQL_OBJECTS");
+            if (string.IsNullOrWhiteSpace(rows))
+            {
+                rows = "clientes\tBASE TABLE;produtos\tBASE TABLE;vw_vendas\tVIEW";
+            }
+            foreach (var row in rows.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                Console.WriteLine(row);
+            }
+            return ExitCode("BACKUPSEVEN_FAKE_MYSQL_EXIT");
+        }
+
         Console.WriteLine("-- BackupSeven fake database dump");
         Console.WriteLine("CREATE DATABASE `seven`;");
         return ExitCode("BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT");

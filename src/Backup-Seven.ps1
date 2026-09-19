@@ -140,6 +140,7 @@ function Read-BackupConfiguration {
     if ('Database' -in $BackupTypes) {
         Assert-ConfigurationSection -Configuration $configuration -Name 'Database'
         Assert-ConfigurationValue -Section $configuration.Tools -Key 'MySqlDump' -DisplayName 'Tools.MySqlDump'
+        Assert-ConfigurationValue -Section $configuration.Tools -Key 'MySql' -DisplayName 'Tools.MySql'
         Assert-ConfigurationValue -Section $configuration.Database -Key 'Name' -DisplayName 'Database.Name'
         Assert-ConfigurationValue -Section $configuration.Database -Key 'DefaultsExtraFile' -DisplayName 'Database.DefaultsExtraFile'
     }
@@ -206,7 +207,7 @@ function Assert-LocalDependency {
     }
 
     if ('Database' -in $BackupTypes) {
-        foreach ($path in @($Configuration.Tools.MySqlDump, $Configuration.Database.DefaultsExtraFile)) {
+        foreach ($path in @($Configuration.Tools.MySqlDump, $Configuration.Tools.MySql, $Configuration.Database.DefaultsExtraFile)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
                 throw "Required database file was not found: $path"
             }
