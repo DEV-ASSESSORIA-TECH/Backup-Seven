@@ -27,7 +27,7 @@ executáveis é incluído no pacote.
 O ZIP de produção contém somente:
 
 ```text
-BackupSeven-0.2.1.zip
+BackupSeven-0.3.0.zip
 ├── Backup-Seven.ps1
 ├── config.psd1
 ├── Modules\

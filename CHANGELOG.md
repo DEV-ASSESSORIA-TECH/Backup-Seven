@@ -4,7 +4,7 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
-## [Não lançado]
+## [0.3.0] - 2026-09-19
 
 ### Adicionado
 
