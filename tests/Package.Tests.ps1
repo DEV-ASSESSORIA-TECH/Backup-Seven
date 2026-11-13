@@ -45,6 +45,7 @@ Describe 'Production package' {
             'Modules/Database.psm1'
             'Modules/Fiscal.psm1'
             'Modules/Logging.psm1'
+            'Modules/Monitoring.psm1'
             'Modules/Storage.psm1'
         )
 

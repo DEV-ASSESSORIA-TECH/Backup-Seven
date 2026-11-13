@@ -4,6 +4,26 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [0.4.0] - 2026-11-13
+
+### Adicionado
+
+- Estado de cada backup em textfile para o Grafana Alloy (job
+  `integrations/backup`), no contrato genérico de backups do repositório
+  `grafana`: `seven__database.prom` e `seven__fiscal.prom` com último sucesso
+  (ponto de recuperação e tamanho), última tentativa (resultado, duração e
+  degradado), intervalo esperado e `backup_info`.
+- Seção opcional `Monitoring` na configuração: ativação, pasta, identidade
+  (`Service` e `BackupIds`) e `ExpectedIntervalHours` por tipo.
+- Módulo `Monitoring.psm1`.
+
+### Alterado
+
+- Falha antes de iniciar os pipelines (exit code `2` após ler a configuração)
+  é registrada como tentativa falha dos tipos solicitados quando o
+  monitoramento está ativo. Falha ao gravar o estado só gera aviso no log e não
+  altera o exit code.
+
 ## [0.3.0] - 2026-09-19
 
 ### Adicionado

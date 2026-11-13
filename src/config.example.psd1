@@ -52,4 +52,29 @@
         CompletedDays = 7
         LogDays       = 30
     }
+
+    # Optional. Writes the generic backup state read by Grafana Alloy (job
+    # integrations/backup). Remove the section or set Enabled = $false to turn
+    # it off. A failure to write never changes the backup exit code.
+    Monitoring = @{
+        Enabled = $true
+
+        # Created by the Alloy installer (servidor profile). BackupSeven never
+        # creates it; if it is missing, the run only logs a warning.
+        TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup'
+
+        # Identity of each backup: <Service>__<BackupId>.prom.
+        Service = 'seven'
+        BackupIds = @{
+            Database = 'database'
+            Fiscal   = 'fiscal'
+        }
+
+        # Largest expected gap between successful backups. With runs at 12:00
+        # and 19:00, the gap from 19:00 to 12:00 is 17 hours.
+        ExpectedIntervalHours = @{
+            Database = 17
+            Fiscal   = 17
+        }
+    }
 }
