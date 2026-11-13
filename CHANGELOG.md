@@ -16,9 +16,13 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
 - Seção opcional `Monitoring` na configuração: ativação, pasta, identidade
   (`Service` e `BackupIds`) e `ExpectedIntervalHours` por tipo.
 - Módulo `Monitoring.psm1`.
+- `Setup-BackupSeven.ps1` no pacote: setup assistido que pergunta os dados,
+  grava configuração e credenciais, restringe `Secrets`, testa MySQL, S3 e a
+  pasta do Alloy e oferece criar as tarefas agendadas e um backup de teste.
 
 ### Alterado
 
+- CI registra o repositório PSGallery quando a imagem do runner não o traz.
 - Falha antes de iniciar os pipelines (exit code `2` após ler a configuração)
   é registrada como tentativa falha dos tipos solicitados quando o
   monitoramento está ativo. Falha ao gravar o estado só gera aviso no log e não

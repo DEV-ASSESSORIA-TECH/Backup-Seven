@@ -36,6 +36,7 @@ Describe 'Production package' {
     It 'contains only the production allowlist' {
         $expectedEntries = @(
             'Backup-Seven.ps1'
+            'Setup-BackupSeven.ps1'
             'config.psd1'
             'README.md'
             'Secrets/mysql-backup.cnf'

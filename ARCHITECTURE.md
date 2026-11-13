@@ -11,13 +11,16 @@ O BackupSeven é uma aplicação PowerShell 7 para um único servidor, instalada
 O modo `Full` solicita os dois tipos. A falha de um tipo não impede a tentativa
 do outro, mas o resultado geral da execução será uma falha.
 
-A aplicação não instala dependências, não administra retenção remota, não cria
-tarefas agendadas do Windows e não inclui executáveis de terceiros.
+A aplicação não instala dependências, não administra retenção remota e não
+inclui executáveis de terceiros. A execução do backup não cria tarefas
+agendadas; o setup assistido opcional (`Setup-BackupSeven.ps1`) oferece
+criá-las.
 
 ## Componentes
 
 | Componente | Contrato |
 | --- | --- |
+| `Setup-BackupSeven.ps1` | Setup assistido e opcional: perguntar os dados, gravar `config.psd1` e os arquivos de `Secrets`, restringir `Secrets` a SYSTEM e Administradores, testar dependências e oferecer as tarefas agendadas. Não participa da execução do backup. |
 | `Backup-Seven.ps1` | Validar entrada e configuração, adquirir o bloqueio de execução, coordenar os pipelines solicitados, aplicar retenção e definir o exit code do processo. |
 | `Logging.psm1` | Gravar eventos UTF-8 de uma linha com data, severidade, ID da execução, modo e etapa. Chamadores nunca devem fornecer segredos como mensagens de log. |
 | `Archive.psm1` | Criar um `.7z` único com o paralelismo configurado, rejeitar qualquer exit code não zero do 7-Zip, verificar se a saída não está vazia e executar `7z test`. |

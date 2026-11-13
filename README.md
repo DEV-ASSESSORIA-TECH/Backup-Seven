@@ -30,6 +30,7 @@ O ZIP de produção contém somente:
 ```text
 BackupSeven-0.4.0.zip
 ├── Backup-Seven.ps1
+├── Setup-BackupSeven.ps1
 ├── config.psd1
 ├── Modules\
 ├── Secrets\
@@ -80,6 +81,7 @@ Depois da extração, a instalação terá inicialmente:
 ```text
 C:\TI\Scripts\BackupSeven\
 ├── Backup-Seven.ps1
+├── Setup-BackupSeven.ps1
 ├── config.psd1
 ├── Modules\
 ├── Secrets\
@@ -90,6 +92,35 @@ C:\TI\Scripts\BackupSeven\
 ```
 
 O script criará `Runtime`, `Completed` e `Logs` na primeira execução.
+
+### Setup assistido
+
+Para não editar os arquivos à mão, execute em um PowerShell 7 **como
+Administrador**, dentro da pasta extraída:
+
+```powershell
+cd C:\TI\Scripts\BackupSeven
+pwsh -File .\Setup-BackupSeven.ps1
+```
+
+O setup:
+
+1. pergunta instância, executáveis, banco, credencial do MySQL, pasta Fiscal,
+   destino e credencial do S3 e monitoramento; os valores atuais aparecem entre
+   colchetes e Enter os mantém;
+2. grava `config.psd1` (a versão anterior fica em `config.psd1.bak-<data>`),
+   `Secrets\mysql-backup.cnf` e `Secrets\rclone.conf`; credenciais já
+   preenchidas podem ser mantidas;
+3. cria `Runtime`, `Completed` e `Logs` e restringe `Secrets` a SYSTEM e
+   Administradores;
+4. testa a conexão com o banco, o acesso ao S3 (`rclone lsf`) e a gravação na
+   pasta do Grafana Alloy;
+5. oferece criar ou atualizar as tarefas `Full` das 12:00 e 19:00 (SYSTEM) e
+   executar um backup de teste.
+
+Pode ser executado de novo a qualquer momento, por exemplo depois de uma
+atualização ou para trocar uma senha. As seções 3 a 6 e 10 descrevem a
+configuração manual equivalente.
 
 ## 3. Configuração principal
 
