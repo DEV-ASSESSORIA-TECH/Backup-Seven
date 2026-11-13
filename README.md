@@ -18,6 +18,7 @@ meio do rclone e mantém retenção local por idade.
 - Registra um log UTF-8 por execução e também o envia ao S3.
 - Nunca executa `rclone sync` nem remove objetos remotos.
 - Impede duas execuções simultâneas por meio de um lock local.
+- Opcionalmente, grava o estado de cada backup para o Grafana Alloy (seção 13).
 
 PowerShell 7, 7-Zip, rclone, mysql e mysqldump são dependências externas. Nenhum desses
 executáveis é incluído no pacote.
@@ -27,8 +28,9 @@ executáveis é incluído no pacote.
 O ZIP de produção contém somente:
 
 ```text
-BackupSeven-0.3.0.zip
+BackupSeven-0.4.0.zip
 ├── Backup-Seven.ps1
+├── Setup-BackupSeven.ps1
 ├── config.psd1
 ├── Modules\
 ├── Secrets\
@@ -79,6 +81,7 @@ Depois da extração, a instalação terá inicialmente:
 ```text
 C:\TI\Scripts\BackupSeven\
 ├── Backup-Seven.ps1
+├── Setup-BackupSeven.ps1
 ├── config.psd1
 ├── Modules\
 ├── Secrets\
@@ -89,6 +92,35 @@ C:\TI\Scripts\BackupSeven\
 ```
 
 O script criará `Runtime`, `Completed` e `Logs` na primeira execução.
+
+### Setup assistido
+
+Para não editar os arquivos à mão, execute em um PowerShell 7 **como
+Administrador**, dentro da pasta extraída:
+
+```powershell
+cd C:\TI\Scripts\BackupSeven
+pwsh -File .\Setup-BackupSeven.ps1
+```
+
+O setup:
+
+1. pergunta instância, executáveis, banco, credencial do MySQL, pasta Fiscal,
+   destino e credencial do S3 e monitoramento; os valores atuais aparecem entre
+   colchetes e Enter os mantém;
+2. grava `config.psd1` (a versão anterior fica em `config.psd1.bak-<data>`),
+   `Secrets\mysql-backup.cnf` e `Secrets\rclone.conf`; credenciais já
+   preenchidas podem ser mantidas;
+3. cria `Runtime`, `Completed` e `Logs` e restringe `Secrets` a SYSTEM e
+   Administradores;
+4. testa a conexão com o banco, o acesso ao S3 (`rclone lsf`) e a gravação na
+   pasta do Grafana Alloy;
+5. oferece criar ou atualizar as tarefas `Full` das 12:00 e 19:00 (SYSTEM) e
+   executar um backup de teste.
+
+Pode ser executado de novo a qualquer momento, por exemplo depois de uma
+atualização ou para trocar uma senha. As seções 3 a 6 e 10 descrevem a
+configuração manual equivalente.
 
 ## 3. Configuração principal
 
@@ -138,8 +170,18 @@ dados conhecidos da instalação atual:
         CompletedDays = 7
         LogDays       = 30
     }
+
+    Monitoring = @{
+        Enabled           = $true
+        TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup'
+        Service           = 'seven'
+        BackupIds         = @{ Database = 'database'; Fiscal = 'fiscal' }
+        ExpectedIntervalHours = @{ Database = 17; Fiscal = 17 }
+    }
 }
 ```
+
+A seção `Monitoring` é opcional; veja a seção 13.
 
 O nome `s3` em `RemoteRoot` deve ser exatamente o nome escolhido para o remote
 do rclone.
@@ -484,14 +526,75 @@ Logs\
 Completed\
 ```
 
-Ao adotar esta versão, adicione `Tools.MySql` e `Paths.CompletedRoot` ao arquivo
-de configuração existente. A aplicação não move automaticamente os archives
+Ao adotar a versão 0.3.0 ou posterior, adicione `Tools.MySql` e
+`Paths.CompletedRoot` ao arquivo de configuração existente. Para o monitoramento
+da versão 0.4.0, copie a seção `Monitoring` do novo modelo; sem ela, nada muda. A aplicação não move automaticamente os archives
 antigos de `Runtime\Completed`; faça essa migração manualmente antes de remover
 a pasta antiga.
 
 Compare o novo modelo com a configuração existente e substitua somente scripts,
 módulos, README e VERSION. Credenciais reais nunca devem ser copiadas de volta
 para o repositório.
+
+## 13. Monitoramento (Grafana Alloy)
+
+Opcional. Com `Monitoring.Enabled = $true`, ao fim de cada pipeline o
+BackupSeven grava o estado do backup em `TextfileDirectory`, lido pelo Grafana
+Alloy e publicado no job `integrations/backup`. O formato segue o contrato
+genérico de backups (`contracts/prometheus/backup.yml` no repositório
+`grafana`). O Alloy apenas lê e envia; não há coletor próprio.
+
+| Chave | Padrão | Uso |
+| --- | --- | --- |
+| `Enabled` | obrigatório na seção | `$true` grava; `$false` ou seção ausente desliga |
+| `TextfileDirectory` | obrigatório quando ativo | pasta criada pelo instalador do Alloy (perfil servidor) |
+| `Service` | `seven` | identidade do serviço protegido |
+| `BackupIds` | `database` e `fiscal` | identidade de cada tipo |
+| `ExpectedIntervalHours` | sem valor | maior intervalo esperado entre sucessos, por tipo; habilita o alerta genérico de atraso |
+
+`Service` e os valores de `BackupIds` usam letras minúsculas, números e `-` ou
+`_` simples. Um valor inválido encerra a execução com exit code `2`, como as
+demais configurações.
+
+Arquivos gravados (um por tipo, substituídos atomicamente):
+
+```text
+C:\ProgramData\GrafanaLabs\Alloy\textfile\backup\
+├── seven__database.prom
+└── seven__fiscal.prom
+```
+
+| Métrica | Valor no BackupSeven |
+| --- | --- |
+| `backup_last_success_timestamp_seconds` | horário UTC do nome do archive normal mais recente em `Completed` (ponto de recuperação); `0` se nunca houve |
+| `backup_last_success_size_bytes` | tamanho desse archive |
+| `backup_last_attempt_timestamp_seconds` | fim da tentativa |
+| `backup_last_attempt_success` | `1` só quando o archive foi confirmado no S3 no fluxo normal |
+| `backup_last_attempt_degraded` | `1` quando o banco foi publicado como `DEGRADED` (exit code `5`) |
+| `backup_last_attempt_duration_seconds` | duração do pipeline |
+| `backup_expected_interval_seconds` | `ExpectedIntervalHours` × 3600, quando configurado |
+| `backup_collection_*` | momento da gravação e se o estado pôde ser lido |
+| `backup_info` | `kind` (`database` ou `files`), `producer`, `producer_version` e `site` (`InstanceName` em minúsculas) |
+
+Regras:
+
+- archive que só ficou em `Pending` é tentativa falha; quando um reenvio
+  posterior o confirma, ele passa a ser o último sucesso, com o horário
+  original;
+- archives `DEGRADED` nunca contam como sucesso;
+- o último sucesso também é lido do arquivo anterior, para não voltar a `0`
+  quando a retenção local remove os archives antigos;
+- exit code `2` depois de ler a configuração grava tentativa falha para os
+  tipos solicitados; exit code `3` (lock) não grava nada;
+- falha ao gravar (pasta ausente, permissão) gera `WARN` na etapa
+  `<tipo>/Monitoring` e nunca altera o exit code do backup.
+
+A conta da tarefa agendada precisa gravar na pasta. `SYSTEM` já tem acesso;
+outra conta deve entrar no grupo local `Alloy Backup Writers`:
+
+```powershell
+net localgroup "Alloy Backup Writers" <conta> /add
+```
 
 ## Desenvolvimento e distribuição
 

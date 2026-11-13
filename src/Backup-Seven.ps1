@@ -17,6 +17,7 @@ Import-Module (Join-Path $moduleRoot 'Database.psm1') -Force
 Import-Module (Join-Path $moduleRoot 'Fiscal.psm1') -Force
 Import-Module (Join-Path $moduleRoot 'Archive.psm1') -Force
 Import-Module (Join-Path $moduleRoot 'Storage.psm1') -Force
+Import-Module (Join-Path $moduleRoot 'Monitoring.psm1') -Force
 
 function Get-ApplicationVersion {
     $candidates = @(
@@ -151,6 +152,205 @@ function Read-BackupConfiguration {
     }
 
     return $configuration
+}
+
+function Get-MonitoringSetting {
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary] $Configuration
+    )
+
+    if (-not $Configuration.Contains('Monitoring') -or $null -eq $Configuration.Monitoring) {
+        return $null
+    }
+
+    $section = $Configuration.Monitoring
+    if ($section -isnot [System.Collections.IDictionary]) {
+        throw "Configuration section 'Monitoring' must be a hashtable."
+    }
+
+    if (-not $section.Contains('Enabled') -or $section.Enabled -isnot [bool]) {
+        throw 'Monitoring.Enabled must be $true or $false.'
+    }
+
+    if (-not $section.Enabled) {
+        return $null
+    }
+
+    Assert-ConfigurationValue -Section $section -Key 'TextfileDirectory' -DisplayName 'Monitoring.TextfileDirectory'
+    if (-not [System.IO.Path]::IsPathFullyQualified([string] $section.TextfileDirectory)) {
+        throw 'Monitoring.TextfileDirectory must be an absolute path.'
+    }
+
+    $service = 'seven'
+    if ($section.Contains('Service') -and -not [string]::IsNullOrWhiteSpace([string] $section.Service)) {
+        $service = [string] $section.Service
+    }
+    if (-not (Test-SevenMetricIdentifier -Value $service)) {
+        throw 'Monitoring.Service must use lowercase letters, numbers and single hyphens or underscores.'
+    }
+
+    $backupIds = @{ Database = 'database'; Fiscal = 'fiscal' }
+    if ($section.Contains('BackupIds') -and $null -ne $section.BackupIds) {
+        if ($section.BackupIds -isnot [System.Collections.IDictionary]) {
+            throw 'Monitoring.BackupIds must be a hashtable.'
+        }
+
+        foreach ($key in @($section.BackupIds.Keys)) {
+            if ($key -notin @('Database', 'Fiscal')) {
+                throw "Monitoring.BackupIds accepts only Database and Fiscal: $key"
+            }
+
+            $backupId = [string] $section.BackupIds[$key]
+            if (-not (Test-SevenMetricIdentifier -Value $backupId)) {
+                throw "Monitoring.BackupIds.$key must use lowercase letters, numbers and single hyphens or underscores."
+            }
+
+            $backupIds[$key] = $backupId
+        }
+    }
+
+    if ($backupIds.Database -eq $backupIds.Fiscal) {
+        throw 'Monitoring.BackupIds must be different for Database and Fiscal.'
+    }
+
+    $intervals = @{}
+    if ($section.Contains('ExpectedIntervalHours') -and $null -ne $section.ExpectedIntervalHours) {
+        if ($section.ExpectedIntervalHours -isnot [System.Collections.IDictionary]) {
+            throw 'Monitoring.ExpectedIntervalHours must be a hashtable.'
+        }
+
+        foreach ($key in @($section.ExpectedIntervalHours.Keys)) {
+            if ($key -notin @('Database', 'Fiscal')) {
+                throw "Monitoring.ExpectedIntervalHours accepts only Database and Fiscal: $key"
+            }
+
+            $hours = 0.0
+            $isNumber = [double]::TryParse(
+                [string] $section.ExpectedIntervalHours[$key],
+                [System.Globalization.NumberStyles]::Float,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [ref] $hours
+            )
+            if (-not $isNumber -or $hours -le 0) {
+                throw "Monitoring.ExpectedIntervalHours.$key must be a number greater than zero."
+            }
+
+            $intervals[$key] = $hours * 3600
+        }
+    }
+
+    [pscustomobject]@{
+        TextfileDirectory       = [string] $section.TextfileDirectory
+        Service                 = $service
+        BackupIds               = $backupIds
+        ExpectedIntervalSeconds = $intervals
+    }
+}
+
+function Get-LastCompletedArchive {
+    param(
+        [Parameter(Mandatory)][string] $CompletedRoot,
+        [Parameter(Mandatory)][string] $BackupType
+    )
+
+    $typeRoot = Join-Path $CompletedRoot $BackupType
+    if (-not (Test-Path -LiteralPath $typeRoot -PathType Container)) {
+        return $null
+    }
+
+    $latest = $null
+    foreach ($archive in Get-ChildItem -LiteralPath $typeRoot -Filter '*.7z' -File -Recurse) {
+        # Degraded archives are usable but incomplete: never a successful backup.
+        if ($archive.Name -match '_DEGRADED\.7z$') {
+            continue
+        }
+
+        try {
+            $dateParts = Get-ArtifactDateInfo -FileName $archive.Name
+        }
+        catch {
+            continue
+        }
+
+        if ($null -eq $latest -or $dateParts.Timestamp -gt $latest.Timestamp) {
+            $latest = [pscustomobject]@{ Timestamp = $dateParts.Timestamp; SizeBytes = [long] $archive.Length }
+        }
+    }
+
+    return $latest
+}
+
+function Publish-BackupMonitoring {
+    <#
+    Writes the backup state for the Alloy textfile reader. Monitoring never
+    changes the backup result: any failure here is logged as WARN.
+    #>
+    param(
+        [Parameter(Mandatory)][pscustomobject] $Monitoring,
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Configuration,
+        [Parameter(Mandatory)][string] $BackupType,
+        [Parameter(Mandatory)][ValidateSet('SUCCESS', 'DEGRADED', 'FAILED')][string] $Status,
+        [Parameter(Mandatory)][double] $DurationSeconds,
+        [Parameter(Mandatory)][string] $Version
+    )
+
+    $stage = "$BackupType/Monitoring"
+    try {
+        $backupId = [string] $Monitoring.BackupIds[$BackupType]
+        $fileName = Get-SevenBackupMetricFileName -Service $Monitoring.Service -BackupId $backupId
+        $collectionSucceeded = $true
+        $lastSuccessTimestamp = [long] 0
+        $lastSuccessSizeBytes = $null
+        try {
+            $previous = Read-SevenBackupMetricState -Path (Join-Path $Monitoring.TextfileDirectory $fileName)
+            $lastSuccessTimestamp = $previous.LastSuccessTimestamp
+            $lastSuccessSizeBytes = $previous.LastSuccessSizeBytes
+            $latest = Get-LastCompletedArchive -CompletedRoot ([string] $Configuration.Paths.CompletedRoot) -BackupType $BackupType
+            if ($null -ne $latest) {
+                $latestTimestamp = [DateTimeOffset]::new($latest.Timestamp).ToUnixTimeSeconds()
+                if ($latestTimestamp -ge $lastSuccessTimestamp) {
+                    $lastSuccessTimestamp = $latestTimestamp
+                    $lastSuccessSizeBytes = $latest.SizeBytes
+                }
+            }
+        }
+        catch {
+            $collectionSucceeded = $false
+            Write-BackupLog -Level WARN -Stage $stage -Message "Could not read the last successful backup: $($_.Exception.Message)"
+        }
+
+        $expectedInterval = $null
+        if ($Monitoring.ExpectedIntervalSeconds.Contains($BackupType)) {
+            $expectedInterval = [double] $Monitoring.ExpectedIntervalSeconds[$BackupType]
+        }
+
+        $kind = if ($BackupType -eq 'Database') { 'database' } else { 'files' }
+        $content = Format-SevenBackupMetric `
+            -Service $Monitoring.Service `
+            -BackupId $backupId `
+            -CollectedAtUtc ([DateTime]::UtcNow) `
+            -CollectionSucceeded $collectionSucceeded `
+            -AttemptFinishedAtUtc ([DateTime]::UtcNow) `
+            -AttemptSucceeded ($Status -eq 'SUCCESS') `
+            -AttemptDegraded ($Status -eq 'DEGRADED') `
+            -AttemptDurationSeconds $DurationSeconds `
+            -LastSuccessTimestamp $lastSuccessTimestamp `
+            -LastSuccessSizeBytes $lastSuccessSizeBytes `
+            -ExpectedIntervalSeconds $expectedInterval `
+            -InfoLabels ([ordered]@{
+                kind             = $kind
+                producer         = 'backup-seven'
+                producer_version = $Version
+                site             = ([string] $Configuration.InstanceName).ToLowerInvariant()
+            })
+
+        $path = Write-SevenBackupMetric -Directory $Monitoring.TextfileDirectory -Service $Monitoring.Service -BackupId $backupId -Content $content
+        Write-BackupLog -Level INFO -Stage $stage -Message "Backup state ($Status) written to '$path'."
+    }
+    catch {
+        Write-BackupLog -Level WARN -Stage $stage -Message "Backup state was not written: $($_.Exception.Message)"
+    }
 }
 
 function Get-BackupType {
@@ -762,11 +962,15 @@ function Invoke-BackupSeven {
     )
 
     $runId = [guid]::NewGuid().ToString('N')
+    $runStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $backupTypes = Get-BackupType -RequestedMode $RequestedMode
     $lockStream = $null
     $layout = $null
     $logInitialized = $false
     $storageValidated = $false
+    $version = $null
+    $monitoring = $null
+    $monitoredTypes = [System.Collections.Generic.List[string]]::new()
 
     try {
         if ([string]::IsNullOrWhiteSpace($RequestedConfigPath)) {
@@ -775,6 +979,7 @@ function Invoke-BackupSeven {
 
         $version = Get-ApplicationVersion
         $configuration = Read-BackupConfiguration -Path $RequestedConfigPath -BackupTypes $backupTypes
+        $monitoring = Get-MonitoringSetting -Configuration $configuration
         $layout = New-RuntimeLayout `
             -RuntimeRoot $configuration.Paths.RuntimeRoot `
             -CompletedRoot $configuration.Paths.CompletedRoot `
@@ -788,6 +993,9 @@ function Invoke-BackupSeven {
             -Mode $RequestedMode `
             -Version $version
         $logInitialized = $true
+        if ($null -ne $monitoring) {
+            Write-BackupLog -Level INFO -Stage 'Startup/Monitoring' -Message "Backup state will be written to '$($monitoring.TextfileDirectory)'."
+        }
 
         try {
             $lockStream = [System.IO.File]::Open(
@@ -820,9 +1028,11 @@ function Invoke-BackupSeven {
 
         foreach ($backupType in $backupTypes) {
             $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $pipelineStatus = 'FAILED'
             try {
                 if ($backupType -eq 'Database') {
                     $databaseStatus = Invoke-DatabaseBackup -RunId $runId -Configuration $configuration -Layout $layout
+                    $pipelineStatus = if ($databaseStatus -eq 'DEGRADED') { 'DEGRADED' } else { 'SUCCESS' }
                     if ($databaseStatus -eq 'DEGRADED') {
                         $operationDegraded = $true
                         Write-BackupLog -Level WARN -Stage 'Database/Complete' -Message "Pipeline completed as DEGRADED in $([math]::Round($stopwatch.Elapsed.TotalSeconds, 1)) seconds."
@@ -833,6 +1043,7 @@ function Invoke-BackupSeven {
                 }
                 else {
                     Invoke-FiscalBackup -RunId $runId -Configuration $configuration -Layout $layout
+                    $pipelineStatus = 'SUCCESS'
                     Write-BackupLog -Level INFO -Stage 'Fiscal/Complete' -Message "Pipeline completed in $([math]::Round($stopwatch.Elapsed.TotalSeconds, 1)) seconds."
                 }
             }
@@ -842,6 +1053,11 @@ function Invoke-BackupSeven {
             }
             finally {
                 $stopwatch.Stop()
+                if ($null -ne $monitoring) {
+                    Publish-BackupMonitoring -Monitoring $monitoring -Configuration $configuration -BackupType $backupType `
+                        -Status $pipelineStatus -DurationSeconds $stopwatch.Elapsed.TotalSeconds -Version $version
+                    $monitoredTypes.Add($backupType)
+                }
             }
         }
 
@@ -892,6 +1108,16 @@ function Invoke-BackupSeven {
     catch {
         if ($logInitialized) {
             Write-BackupLog -Level ERROR -Stage 'Startup' -Message $_.Exception.Message
+
+            # A requested backup that could not start is a failed attempt.
+            if ($null -ne $monitoring) {
+                foreach ($backupType in $backupTypes) {
+                    if (-not $monitoredTypes.Contains($backupType)) {
+                        Publish-BackupMonitoring -Monitoring $monitoring -Configuration $configuration -BackupType $backupType `
+                            -Status FAILED -DurationSeconds $runStopwatch.Elapsed.TotalSeconds -Version $version
+                    }
+                }
+            }
 
             if ($storageValidated) {
                 try {

@@ -11,19 +11,23 @@ O BackupSeven é uma aplicação PowerShell 7 para um único servidor, instalada
 O modo `Full` solicita os dois tipos. A falha de um tipo não impede a tentativa
 do outro, mas o resultado geral da execução será uma falha.
 
-A aplicação não instala dependências, não administra retenção remota, não cria
-tarefas agendadas do Windows e não inclui executáveis de terceiros.
+A aplicação não instala dependências, não administra retenção remota e não
+inclui executáveis de terceiros. A execução do backup não cria tarefas
+agendadas; o setup assistido opcional (`Setup-BackupSeven.ps1`) oferece
+criá-las.
 
 ## Componentes
 
 | Componente | Contrato |
 | --- | --- |
+| `Setup-BackupSeven.ps1` | Setup assistido e opcional: perguntar os dados, gravar `config.psd1` e os arquivos de `Secrets`, restringir `Secrets` a SYSTEM e Administradores, testar dependências e oferecer as tarefas agendadas. Não participa da execução do backup. |
 | `Backup-Seven.ps1` | Validar entrada e configuração, adquirir o bloqueio de execução, coordenar os pipelines solicitados, aplicar retenção e definir o exit code do processo. |
 | `Logging.psm1` | Gravar eventos UTF-8 de uma linha com data, severidade, ID da execução, modo e etapa. Chamadores nunca devem fornecer segredos como mensagens de log. |
 | `Archive.psm1` | Criar um `.7z` único com o paralelismo configurado, rejeitar qualquer exit code não zero do 7-Zip, verificar se a saída não está vazia e executar `7z test`. |
 | `Database.psm1` | Executar mysql/mysqldump, retornar resultado estruturado, enumerar tabelas/views e normalizar nomes de arquivos do fallback granular. |
 | `Fiscal.psm1` | Validar a origem Fiscal e produzir um archive validado por meio de `Archive.psm1`. |
 | `Storage.psm1` | Enviar um archive ou log com `rclone copyto` e validá-lo com `rclone check --one-way`. |
+| `Monitoring.psm1` | Formatar o estado de um backup no contrato genérico de backups (textfile do Grafana Alloy) e gravá-lo de forma atômica. Não cria a pasta nem decide o estado. |
 
 Os módulos expõem somente as funções necessárias ao script principal. Falhas
 operacionais esperadas são lançadas como erros terminantes e tratadas no limite
@@ -133,6 +137,27 @@ o nível normal. `Archive.CpuLimitPercent` é convertido em
 `floor(processadores_lógicos * percentual / 100)`, com mínimo de uma thread, e
 enviado por `-mmt`. Trata-se de um limite aproximado do paralelismo do 7-Zip,
 não de uma cota rígida de CPU do processo ou do sistema.
+
+## Contrato de monitoramento
+
+A seção opcional `Monitoring` liga a gravação do estado de cada tipo em
+`<TextfileDirectory>\<Service>__<BackupId>.prom`, no contrato genérico de
+backups do repositório `grafana` (`contracts/prometheus/backup.yml`, job
+`integrations/backup`). O script principal decide o estado; o módulo só formata
+e grava.
+
+- O arquivo é gravado no `finally` de cada pipeline, com o status `SUCCESS`,
+  `DEGRADED` ou `FAILED`. Uma falha antes dos pipelines (exit code `2` com a
+  configuração já lida e o log inicializado) grava `FAILED` para os tipos
+  solicitados. O lock ocupado (exit code `3`) não grava.
+- O último sucesso é o maior entre o archive normal mais recente em
+  `Completed\<tipo>` (timestamp do nome, que é o início do pipeline) e o valor
+  do arquivo anterior. Assim o estado continua sem banco externo e não regride
+  quando a retenção local remove archives.
+- Gravar o estado nunca altera o resultado: qualquer erro vira `WARN` na etapa
+  `<tipo>/Monitoring`.
+- A pasta pertence à instalação do Alloy, que define a ACL; o BackupSeven nunca
+  a cria.
 
 ## Logs e exit codes
 

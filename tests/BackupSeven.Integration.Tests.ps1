@@ -23,6 +23,28 @@ BeforeAll {
 
         return $exitCode
     }
+
+    function Enable-TestMonitoring([string] $Extra = '') {
+        $script:Textfile = Join-Path $script:TestRoot 'textfile'
+        $null = New-Item -ItemType Directory -Path $script:Textfile -Force
+        $text = (Get-Content -LiteralPath $script:ConfigPath -Raw).TrimEnd()
+        $text = $text.Substring(0, $text.Length - 1) + @"
+    Monitoring = @{
+        Enabled = `$true
+        TextfileDirectory = '$($script:Textfile.Replace("'", "''"))'
+        $Extra
+    }
+}
+"@
+        Set-Content -LiteralPath $script:ConfigPath -Value $text
+    }
+
+    function Get-TestMetric([string] $BackupId, [string] $Name) {
+        $path = Join-Path $script:Textfile "seven__$BackupId.prom"
+        $line = @(Get-Content -LiteralPath $path | Where-Object { $_ -like "$Name{*" }) | Select-Object -First 1
+        if ($null -eq $line) { return $null }
+        return ($line -split ' ')[-1]
+    }
 }
 
 BeforeEach {
@@ -300,6 +322,98 @@ Context 'End-to-end orchestration' {
         Set-Content -LiteralPath $script:ConfigPath -Value '@{}'
 
         Invoke-TestBackup -Mode Database | Should -Be 2
+    }
+}
+
+Context 'Backup monitoring (textfile)' {
+    It 'writes no state file when Monitoring is absent' {
+        $script:Textfile = Join-Path $script:TestRoot 'textfile'
+        $null = New-Item -ItemType Directory -Path $script:Textfile -Force
+
+        Invoke-TestBackup -Mode Full | Should -Be 0
+
+        @(Get-ChildItem -LiteralPath $script:Textfile -Force).Count | Should -Be 0
+    }
+
+    It 'writes one state file per backup type after a successful Full run' {
+        Enable-TestMonitoring -Extra 'ExpectedIntervalHours = @{ Database = 17; Fiscal = 24 }'
+
+        $exitCode = Invoke-TestBackup -Mode Full
+        if ($exitCode -ne 0) {
+            throw "Full backup exited with $exitCode. $($script:LastBackupOutput -join [Environment]::NewLine)"
+        }
+
+        @(Get-ChildItem -LiteralPath $script:Textfile -Force).Name | Sort-Object |
+            Should -Be @('seven__database.prom', 'seven__fiscal.prom')
+        $archive = Get-ChildItem (Join-Path $script:Completed 'Database') -Filter '*.7z' -File | Select-Object -First 1
+        $archive.Name -match '^BackupSeven_(?<date>\d{4}-\d{2}-\d{2})_(?<time>\d{6})Z_' | Should -BeTrue
+        $recoveryPoint = [DateTimeOffset]::ParseExact(
+            "$($Matches.date)$($Matches.time)", 'yyyy-MM-ddHHmmss',
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal).ToUnixTimeSeconds()
+
+        Get-TestMetric database 'backup_last_success_timestamp_seconds' | Should -Be ([string] $recoveryPoint)
+        Get-TestMetric database 'backup_last_success_size_bytes' | Should -Be ([string] $archive.Length)
+        Get-TestMetric database 'backup_last_attempt_success' | Should -Be '1'
+        Get-TestMetric database 'backup_last_attempt_degraded' | Should -Be '0'
+        Get-TestMetric database 'backup_collection_success' | Should -Be '1'
+        Get-TestMetric database 'backup_expected_interval_seconds' | Should -Be '61200'
+        Get-TestMetric fiscal 'backup_expected_interval_seconds' | Should -Be '86400'
+        Get-TestMetric fiscal 'backup_last_attempt_success' | Should -Be '1'
+        Get-Content -LiteralPath (Join-Path $script:Textfile 'seven__fiscal.prom') -Raw |
+            Should -Match 'backup_info\{service="seven",backup_id="fiscal",kind="files",producer="backup-seven",producer_version="\d+\.\d+\.\d+",site="test-server"\} 1'
+    }
+
+    It 'keeps the last success when a later attempt fails' {
+        Enable-TestMonitoring
+        Invoke-TestBackup -Mode Fiscal | Should -Be 0
+        $lastSuccess = Get-TestMetric fiscal 'backup_last_success_timestamp_seconds'
+
+        $env:BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT = '1'
+        Invoke-TestBackup -Mode Fiscal | Should -Be 1
+
+        Get-TestMetric fiscal 'backup_last_attempt_success' | Should -Be '0'
+        Get-TestMetric fiscal 'backup_last_success_timestamp_seconds' | Should -Be $lastSuccess
+    }
+
+    It 'reports a degraded database backup without counting it as success' {
+        Enable-TestMonitoring
+        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT = '2'
+
+        Invoke-TestBackup -Mode Database | Should -Be 5
+
+        Get-TestMetric database 'backup_last_attempt_success' | Should -Be '0'
+        Get-TestMetric database 'backup_last_attempt_degraded' | Should -Be '1'
+        Get-TestMetric database 'backup_last_success_timestamp_seconds' | Should -Be '0'
+        Get-TestMetric database 'backup_last_success_size_bytes' | Should -BeNullOrEmpty
+    }
+
+    It 'reports a failed attempt for every requested type when startup fails' {
+        Enable-TestMonitoring
+        $env:BACKUPSEVEN_FAKE_RCLONE_LIST_EXIT = '1'
+
+        Invoke-TestBackup -Mode Full | Should -Be 2
+
+        Get-TestMetric database 'backup_last_attempt_success' | Should -Be '0'
+        Get-TestMetric fiscal 'backup_last_attempt_success' | Should -Be '0'
+    }
+
+    It 'does not change the result when the textfile directory is missing' {
+        Enable-TestMonitoring
+        Remove-Item -LiteralPath $script:Textfile -Recurse -Force
+
+        Invoke-TestBackup -Mode Fiscal | Should -Be 0
+
+        Test-Path -LiteralPath $script:Textfile | Should -BeFalse
+        $logContent = Get-ChildItem $script:Logs -Filter '*.log' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
+        $logContent -join [Environment]::NewLine | Should -Match '\[WARN\].*\[Fiscal/Monitoring\] Backup state was not written'
+    }
+
+    It 'returns exit code 2 for an invalid Monitoring section' {
+        Enable-TestMonitoring -Extra "Service = 'Seven'"
+
+        Invoke-TestBackup -Mode Fiscal | Should -Be 2
+        @(Get-ChildItem -LiteralPath $script:Textfile -Force).Count | Should -Be 0
     }
 }
 }

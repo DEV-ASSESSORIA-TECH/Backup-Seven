@@ -34,6 +34,7 @@ try {
 
     $requiredSources = @(
         (Join-Path $sourceRoot 'Backup-Seven.ps1')
+        (Join-Path $sourceRoot 'Setup-BackupSeven.ps1')
         (Join-Path $sourceRoot 'config.example.psd1')
         $mysqlTemplatePath
         $rcloneTemplatePath
@@ -60,6 +61,7 @@ try {
     $null = New-Item -ItemType Directory -Path $stagingSecrets -Force
 
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'Backup-Seven.ps1') -Destination $stagingRoot
+    Copy-Item -LiteralPath (Join-Path $sourceRoot 'Setup-BackupSeven.ps1') -Destination $stagingRoot
     Copy-Item `
         -LiteralPath (Join-Path $sourceRoot 'config.example.psd1') `
         -Destination (Join-Path $stagingRoot 'config.psd1')
@@ -89,6 +91,7 @@ try {
 
     $expectedEntries = @(
         'Backup-Seven.ps1'
+        'Setup-BackupSeven.ps1'
         'config.psd1'
         'README.md'
         'Secrets/mysql-backup.cnf'

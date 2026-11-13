@@ -28,6 +28,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../src/Modules/Archive.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot '../src/Modules/Database.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot '../src/Modules/Storage.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Monitoring.psm1') -Force
 }
 
 AfterAll {
@@ -224,6 +225,89 @@ Context 'Storage module' {
                 -RemotePath 's3:bucket/backups/failed-check.7z' } | Should -Throw '*rclone check failed*'
 
         $env:BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT = $null
+    }
+}
+
+Context 'Monitoring module' {
+    It 'formats the generic backup contract with fixed identity labels' {
+        $content = Format-SevenBackupMetric `
+            -Service 'seven' `
+            -BackupId 'database' `
+            -CollectedAtUtc ([DateTime]::new(2026, 11, 13, 12, 0, 0, [DateTimeKind]::Utc)) `
+            -CollectionSucceeded $true `
+            -AttemptFinishedAtUtc ([DateTime]::new(2026, 11, 13, 12, 0, 0, [DateTimeKind]::Utc)) `
+            -AttemptSucceeded $true `
+            -AttemptDegraded $false `
+            -AttemptDurationSeconds 184.1234 `
+            -LastSuccessTimestamp 1794592800 `
+            -LastSuccessSizeBytes 524288000 `
+            -ExpectedIntervalSeconds 61200 `
+            -InfoLabels ([ordered]@{ kind = 'database'; site = 'multi "copias"' })
+
+        $content | Should -Not -Match "`r"
+        $content | Should -Match "`n$"
+        $content | Should -Match '(?m)^# TYPE backup_last_success_timestamp_seconds gauge$'
+        $content | Should -Match '(?m)^backup_last_success_timestamp_seconds\{service="seven",backup_id="database"\} 1794592800$'
+        $content | Should -Match '(?m)^backup_last_success_size_bytes\{service="seven",backup_id="database"\} 524288000$'
+        $content | Should -Match '(?m)^backup_last_attempt_timestamp_seconds\{service="seven",backup_id="database"\} 1794571200$'
+        $content | Should -Match '(?m)^backup_last_attempt_success\{service="seven",backup_id="database"\} 1$'
+        $content | Should -Match '(?m)^backup_last_attempt_duration_seconds\{service="seven",backup_id="database"\} 184\.123$'
+        $content | Should -Match '(?m)^backup_last_attempt_degraded\{service="seven",backup_id="database"\} 0$'
+        $content | Should -Match '(?m)^backup_expected_interval_seconds\{service="seven",backup_id="database"\} 61200$'
+        $content | Should -Match '(?m)^backup_collection_success\{service="seven",backup_id="database"\} 1$'
+        $content | Should -Match '(?m)^backup_info\{service="seven",backup_id="database",kind="database",site="multi \\"copias\\""\} 1$'
+        $content | Should -Not -Match '(?m)^[a-z_]+\{[^}]*(job|instance|host)='
+    }
+
+    It 'omits state that is not known' {
+        $content = Format-SevenBackupMetric `
+            -Service 'seven' `
+            -BackupId 'fiscal' `
+            -CollectedAtUtc ([DateTime]::UtcNow) `
+            -CollectionSucceeded $false
+
+        $content | Should -Match '(?m)^backup_collection_success\{service="seven",backup_id="fiscal"\} 0$'
+        $content | Should -Not -Match 'backup_last_'
+        $content | Should -Not -Match 'backup_expected_interval_seconds'
+    }
+
+    It 'rejects identifiers outside the contract' {
+        { Format-SevenBackupMetric -Service 'Seven' -BackupId 'database' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true } |
+            Should -Throw '*service identifier*'
+        { Format-SevenBackupMetric -Service 'seven' -BackupId 'a__b' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true } |
+            Should -Throw '*backup identifier*'
+        { Format-SevenBackupMetric -Service 'seven' -BackupId 'database' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true -InfoLabels @{ instance = 'x' } } |
+            Should -Throw '*backup_info label*'
+    }
+
+    It 'writes atomically and reads the last success back' {
+        $directory = Join-Path $script:TestRoot 'textfile'
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        $content = Format-SevenBackupMetric `
+            -Service 'seven' `
+            -BackupId 'database' `
+            -CollectedAtUtc ([DateTime]::UtcNow) `
+            -CollectionSucceeded $true `
+            -LastSuccessTimestamp 1794592800 `
+            -LastSuccessSizeBytes 42
+
+        $path = Write-SevenBackupMetric -Directory $directory -Service 'seven' -BackupId 'database' -Content $content
+
+        $path | Should -Be (Join-Path $directory 'seven__database.prom')
+        Test-Path -LiteralPath "$path.tmp" | Should -BeFalse
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        $bytes[0] | Should -Be ([byte][char]'#')
+        $state = Read-SevenBackupMetricState -Path $path
+        $state.LastSuccessTimestamp | Should -Be 1794592800
+        $state.LastSuccessSizeBytes | Should -Be 42
+        (Read-SevenBackupMetricState -Path (Join-Path $directory 'missing.prom')).LastSuccessTimestamp | Should -Be 0
+    }
+
+    It 'never creates the textfile directory' {
+        $missing = Join-Path $script:TestRoot 'missing-textfile'
+        { Write-SevenBackupMetric -Directory $missing -Service 'seven' -BackupId 'database' -Content "x`n" } |
+            Should -Throw '*directory was not found*'
+        Test-Path -LiteralPath $missing | Should -BeFalse
     }
 }
 }
