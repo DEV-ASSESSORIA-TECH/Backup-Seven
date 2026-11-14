@@ -37,8 +37,10 @@ Describe 'Production package' {
         $expectedEntries = @(
             'Backup-Seven.ps1'
             'Setup-BackupSeven.ps1'
+            'Setup.bat'
+            'Aplicar-Configuracao.bat'
             'config.psd1'
-            'README.md'
+            'RUNBOOK.md'
             'Secrets/mysql-backup.cnf'
             'Secrets/rclone.conf'
             'VERSION'
@@ -47,6 +49,7 @@ Describe 'Production package' {
             'Modules/Fiscal.psm1'
             'Modules/Logging.psm1'
             'Modules/Monitoring.psm1'
+            'Modules/Schedule.psm1'
             'Modules/Storage.psm1'
         )
 
@@ -74,6 +77,9 @@ Describe 'Production package' {
 
         $configContent | Should -Match "InstanceName = 'MULTI-COPIAS'"
         $configContent | Should -Match "Name = 'a_estoque'"
+        $configContent | Should -Match "'12:00'"
+        $configContent | Should -Match "'19:00'"
+        $configContent | Should -Not -Match 'ExpectedIntervalHours = @'
         $mysqlContent | Should -Match '^\[client\]'
         $mysqlContent | Should -Match 'password=REPLACE_WITH_BACKUP_PASSWORD'
         $rcloneContent | Should -Match '^\[s3\]'
@@ -82,12 +88,24 @@ Describe 'Production package' {
         $rcloneContent | Should -Match 'region = sa-east-1'
     }
 
+    It 'ships Windows batch launchers with CRLF and ExecutionPolicy Bypass' {
+        foreach ($name in @('Setup.bat', 'Aplicar-Configuracao.bat')) {
+            $reader = [System.IO.StreamReader]::new($script:Zip.GetEntry($name).Open())
+            try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
+
+            $content | Should -Match "`r`n"
+            $content | Should -Not -Match "[^`r]`n"
+            $content | Should -Match '-ExecutionPolicy Bypass -File "%~dp0Setup-BackupSeven\.ps1"'
+        }
+    }
+
     It 'does not contain source templates, local secrets or development files' {
         $script:Entries | Should -Not -Contain 'config.example.psd1'
         $script:Entries | Should -Not -Contain 'Secrets/mysql-backup.example.cnf'
         $script:Entries | Should -Not -Contain 'Secrets/rclone.example.conf'
         $script:Entries | Should -Not -Contain 'ARCHITECTURE.md'
         $script:Entries | Should -Not -Contain 'CHANGELOG.md'
+        $script:Entries | Should -Not -Contain 'README.md'
         @($script:Entries | Where-Object { $_ -like 'tests/*' }).Count | Should -Be 0
         @($script:Entries | Where-Object { $_ -like '.github/*' }).Count | Should -Be 0
     }

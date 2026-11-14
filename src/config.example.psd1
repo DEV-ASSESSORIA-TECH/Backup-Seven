@@ -70,11 +70,33 @@
             Fiscal   = 'fiscal'
         }
 
-        # Largest expected gap between successful backups. With runs at 12:00
-        # and 19:00, the gap from 19:00 to 12:00 is 17 hours.
-        ExpectedIntervalHours = @{
-            Database = 17
-            Fiscal   = 17
-        }
+        # The expected gap between successful backups (used by the generic
+        # "backup overdue" alert) is derived from Schedule. Set
+        # ExpectedIntervalHours = @{ Database = 24; Fiscal = 24 } only to
+        # override it.
+    }
+
+    # Scheduled tasks managed by BackupSeven. Apply changes with
+    # Aplicar-Configuracao.bat: tasks are created, updated or removed in the
+    # protected Task Scheduler folder \BackupSeven\ (SYSTEM, -ExecutionPolicy
+    # Bypass). Without this section, no task is managed.
+    #
+    # Each task is a time ('19:00' = Full, daily) or a hashtable:
+    #   At          'HH:mm' (24h, server local time)            required
+    #   Mode        'Full' | 'Database' | 'Fiscal'               default Full
+    #   Frequency   'Daily' | 'Weekly' | 'Monthly'               default Daily
+    #   Days        Weekly: @('Monday', ..., 'Sunday')
+    #   DaysOfMonth Monthly: @(1, 15, 'Last')
+    #   Name        task name; default '<Mode> <Frequency> <HHhMM>'
+    #   Enabled     $false keeps the task registered but disabled
+    #
+    # Examples:
+    #   @{ Mode = 'Database'; Frequency = 'Weekly'; Days = @('Saturday'); At = '03:00' }
+    #   @{ Mode = 'Fiscal'; Frequency = 'Monthly'; DaysOfMonth = @(1, 'Last'); At = '22:00' }
+    Schedule = @{
+        Tasks = @(
+            '12:00'
+            '19:00'
+        )
     }
 }

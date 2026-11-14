@@ -4,6 +4,32 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [0.5.0] - 2026-11-14
+
+### Adicionado
+
+- Seção `Schedule` no `config.psd1`: as tarefas agendadas passam a ser
+  declaradas na configuração (horário; modo `Full`, `Database` ou `Fiscal`;
+  frequência diária, semanal ou mensal; ativa ou não). Padrão: `Full` diário
+  às 12:00 e 19:00.
+- `Aplicar-Configuracao.bat` e `Setup-BackupSeven.ps1 -Apply`: aplicam o
+  `config.psd1` sem perguntar dados e reconciliam as tarefas, com plano
+  (criar, alterar, remover) e confirmação.
+- `Setup.bat`: setup interativo com elevação e `-ExecutionPolicy Bypass`.
+- Tarefas na pasta `\BackupSeven\` do Agendador, acessível só por SYSTEM e
+  Administradores, registradas por XML (inclui o gatilho mensal).
+- Módulo `Schedule.psm1`.
+- `RUNBOOK.md` com os procedimentos de operação, incluído no pacote.
+
+### Alterado
+
+- O intervalo esperado do monitoramento é calculado a partir do `Schedule`;
+  `Monitoring.ExpectedIntervalHours` passa a ser só uma substituição manual.
+  O setup remove o valor fixo gravado pelas versões 0.4.x.
+- Tarefas do BackupSeven fora de `\BackupSeven\` (como as de
+  `\ASSESSORIA SCRIPTS\`) são listadas para remoção na primeira aplicação.
+- `README.md` reescrito como referência e retirado do pacote.
+
 ## [0.4.1] - 2026-11-14
 
 ### Corrigido
