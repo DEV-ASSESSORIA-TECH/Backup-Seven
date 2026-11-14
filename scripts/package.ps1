@@ -35,10 +35,12 @@ try {
     $requiredSources = @(
         (Join-Path $sourceRoot 'Backup-Seven.ps1')
         (Join-Path $sourceRoot 'Setup-BackupSeven.ps1')
+        (Join-Path $sourceRoot 'Setup.bat')
+        (Join-Path $sourceRoot 'Aplicar-Configuracao.bat')
         (Join-Path $sourceRoot 'config.example.psd1')
         $mysqlTemplatePath
         $rcloneTemplatePath
-        (Join-Path $repositoryRoot 'README.md')
+        (Join-Path $repositoryRoot 'RUNBOOK.md')
         $versionPath
     )
 
@@ -62,6 +64,8 @@ try {
 
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'Backup-Seven.ps1') -Destination $stagingRoot
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'Setup-BackupSeven.ps1') -Destination $stagingRoot
+    Copy-Item -LiteralPath (Join-Path $sourceRoot 'Setup.bat') -Destination $stagingRoot
+    Copy-Item -LiteralPath (Join-Path $sourceRoot 'Aplicar-Configuracao.bat') -Destination $stagingRoot
     Copy-Item `
         -LiteralPath (Join-Path $sourceRoot 'config.example.psd1') `
         -Destination (Join-Path $stagingRoot 'config.psd1')
@@ -71,7 +75,7 @@ try {
     Copy-Item `
         -LiteralPath $rcloneTemplatePath `
         -Destination (Join-Path $stagingSecrets 'rclone.conf')
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $stagingRoot
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'RUNBOOK.md') -Destination $stagingRoot
     Copy-Item -LiteralPath $versionPath -Destination $stagingRoot
     foreach ($moduleFile in $moduleFiles) {
         Copy-Item -LiteralPath $moduleFile.FullName -Destination $stagingModules
@@ -92,8 +96,10 @@ try {
     $expectedEntries = @(
         'Backup-Seven.ps1'
         'Setup-BackupSeven.ps1'
+        'Setup.bat'
+        'Aplicar-Configuracao.bat'
         'config.psd1'
-        'README.md'
+        'RUNBOOK.md'
         'Secrets/mysql-backup.cnf'
         'Secrets/rclone.conf'
         'VERSION'

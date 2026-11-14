@@ -12,15 +12,16 @@ O modo `Full` solicita os dois tipos. A falha de um tipo não impede a tentativa
 do outro, mas o resultado geral da execução será uma falha.
 
 A aplicação não instala dependências, não administra retenção remota e não
-inclui executáveis de terceiros. A execução do backup não cria tarefas
-agendadas; o setup assistido opcional (`Setup-BackupSeven.ps1`) oferece
-criá-las.
+inclui executáveis de terceiros. A execução do backup não altera tarefas
+agendadas; elas são reconciliadas com a seção `Schedule` pelo
+`Setup-BackupSeven.ps1` (setup interativo ou `-Apply`).
 
 ## Componentes
 
 | Componente | Contrato |
 | --- | --- |
-| `Setup-BackupSeven.ps1` | Setup assistido, opcional e reexecutável: perguntar os dados com os valores atuais como padrão e alterar somente o que mudou (`config.psd1`, `Secrets`, ACL de `Secrets`, ação das tarefas agendadas que executam o `Backup-Seven.ps1`), desbloquear os arquivos do pacote e testar dependências. Não participa da execução do backup. |
+| `Setup-BackupSeven.ps1` | Sem parâmetros: perguntar os dados com os valores atuais como padrão e gravar somente o que mudou (`config.psd1`, `Secrets`). Com `-Apply`: usar o `config.psd1` como está. Nos dois casos, aplicar a configuração: desbloquear os arquivos do pacote, criar as pastas, restringir `Secrets`, testar dependências e reconciliar as tarefas com `Schedule`. Não participa da execução do backup. |
+| `Setup.bat` / `Aplicar-Configuracao.bat` | Pedir elevação e executar o setup (`-Apply` no segundo) no PowerShell 7 com `-ExecutionPolicy Bypass`. |
 | `Backup-Seven.ps1` | Validar entrada e configuração, adquirir o bloqueio de execução, coordenar os pipelines solicitados, aplicar retenção e definir o exit code do processo. |
 | `Logging.psm1` | Gravar eventos UTF-8 de uma linha com data, severidade, ID da execução, modo e etapa. Chamadores nunca devem fornecer segredos como mensagens de log. |
 | `Archive.psm1` | Criar um `.7z` único com o paralelismo configurado, rejeitar qualquer exit code não zero do 7-Zip, verificar se a saída não está vazia e executar `7z test`. |
@@ -28,6 +29,7 @@ criá-las.
 | `Fiscal.psm1` | Validar a origem Fiscal e produzir um archive validado por meio de `Archive.psm1`. |
 | `Storage.psm1` | Enviar um archive ou log com `rclone copyto` e validá-lo com `rclone check --one-way`. |
 | `Monitoring.psm1` | Formatar o estado de um backup no contrato genérico de backups (textfile do Grafana Alloy) e gravá-lo de forma atômica. Não cria a pasta nem decide o estado. |
+| `Schedule.psm1` | Normalizar e validar `Schedule`, calcular o maior intervalo entre execuções por tipo e gerar o XML de registro de cada tarefa com sua impressão digital. Não acessa o Agendador. |
 
 Os módulos expõem somente as funções necessárias ao script principal. Falhas
 operacionais esperadas são lançadas como erros terminantes e tratadas no limite
@@ -185,19 +187,37 @@ Os exit codes são intencionalmente poucos e estáveis:
 
 ## Contrato de agendamento
 
-O Agendador de Tarefas executa o PowerShell 7 com `-NoProfile -NonInteractive
--ExecutionPolicy Bypass` (os scripts do pacote não são assinados) e a opção "Executar independentemente de o usuário estar conectado". As tarefas
-regulares selecionam explicitamente `Database` ou `Fiscal`; `Full` é destinado
-a uma execução completa solicitada por um operador. A conta do agendador deve
-ter acesso a todos os caminhos locais e arquivos de credenciais configurados.
+A seção `Schedule` do `config.psd1` é a fonte da verdade das tarefas. Cada
+item vira uma tarefa na pasta `\BackupSeven\` do Agendador, registrada por XML
+(o cmdlet não oferece gatilho mensal):
+
+- gatilho de calendário diário, semanal ou mensal no horário local do servidor;
+- execução como SYSTEM, `HighestAvailable`, sem iniciar segunda instância,
+  iniciando quando possível após um horário perdido e limitada a 12 horas;
+- ação `pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+  Backup-Seven.ps1 -Mode <modo>` (os scripts do pacote não são assinados);
+- descritor de segurança da pasta e das tarefas com acesso só de SYSTEM e
+  Administradores (`D:P(A;;FA;;;SY)(A;;FA;;;BA)`).
+
+A descrição de cada tarefa contém `[cfg:<hash>]`, impressão digital da
+definição gerada a partir da configuração. A reconciliação cria as tarefas
+ausentes, regrava as de impressão digital diferente ou com estado ativo
+divergente, remove as da pasta que não estão na configuração e remove tarefas
+fora da pasta que executam o `Backup-Seven.ps1` (versões anteriores). O plano é
+mostrado e só aplicado com confirmação. Sem a seção `Schedule`, nenhuma tarefa
+é gerenciada.
+
+O monitoramento usa `Schedule` para derivar o intervalo esperado de cada tipo
+quando `Monitoring.ExpectedIntervalHours` não está definido. Um `Schedule`
+inválido nunca impede o backup: só deixa o intervalo sem valor, com `WARN`.
 
 ## Distribuição
 
 `scripts/package.ps1` monta o ZIP por uma lista fechada de arquivos, reabre o
 resultado para validar seu conteúdo e gera o arquivo SHA-256 correspondente.
-O empacotador renomeia os três modelos para seus nomes de produção. Credenciais
-reais, runtime, logs, testes, workflows, `ARCHITECTURE.md` e `CHANGELOG.md` não
-entram no pacote. O `Secrets\rclone.conf` incluído é somente o modelo sanitizado.
+O empacotador renomeia os três modelos para seus nomes de produção. O pacote leva
+o `RUNBOOK.md` (operação); `README.md`, `ARCHITECTURE.md`, `CHANGELOG.md`,
+credenciais reais, runtime, logs, testes e workflows não entram. O `Secrets\rclone.conf` incluído é somente o modelo sanitizado.
 Uma atualização deve preservar os arquivos operacionais já preenchidos antes de
 extrair uma nova versão.
 

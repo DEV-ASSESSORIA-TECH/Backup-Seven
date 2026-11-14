@@ -18,6 +18,7 @@ Import-Module (Join-Path $moduleRoot 'Fiscal.psm1') -Force
 Import-Module (Join-Path $moduleRoot 'Archive.psm1') -Force
 Import-Module (Join-Path $moduleRoot 'Storage.psm1') -Force
 Import-Module (Join-Path $moduleRoot 'Monitoring.psm1') -Force
+Import-Module (Join-Path $moduleRoot 'Schedule.psm1') -Force
 
 function Get-ApplicationVersion {
     $candidates = @(
@@ -240,11 +241,28 @@ function Get-MonitoringSetting {
         }
     }
 
+    # Sem ExpectedIntervalHours explicito, o intervalo vem dos agendamentos
+    # (Schedule): maior intervalo entre execucoes que cobrem cada tipo. Um
+    # Schedule invalido nao impede o backup; so fica sem intervalo esperado.
+    $scheduleWarning = $null
+    foreach ($backupType in @('Database', 'Fiscal')) {
+        if ($intervals.Contains($backupType)) { continue }
+        try {
+            $scheduled = @(Get-SevenScheduleTask -Configuration $Configuration)
+            $gapHours = Get-SevenScheduleMaxGap -Tasks $scheduled -BackupType $backupType
+            if ($null -ne $gapHours) { $intervals[$backupType] = [double] $gapHours * 3600 }
+        }
+        catch {
+            $scheduleWarning = "Schedule could not be read; expected interval not published: $($_.Exception.Message)"
+        }
+    }
+
     [pscustomobject]@{
         TextfileDirectory       = [string] $section.TextfileDirectory
         Service                 = $service
         BackupIds               = $backupIds
         ExpectedIntervalSeconds = $intervals
+        ScheduleWarning         = $scheduleWarning
     }
 }
 
@@ -995,6 +1013,9 @@ function Invoke-BackupSeven {
         $logInitialized = $true
         if ($null -ne $monitoring) {
             Write-BackupLog -Level INFO -Stage 'Startup/Monitoring' -Message "Backup state will be written to '$($monitoring.TextfileDirectory)'."
+            if ($monitoring.ScheduleWarning) {
+                Write-BackupLog -Level WARN -Stage 'Startup/Monitoring' -Message $monitoring.ScheduleWarning
+            }
         }
 
         try {

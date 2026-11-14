@@ -364,6 +364,26 @@ Context 'Backup monitoring (textfile)' {
             Should -Match 'backup_info\{service="seven",backup_id="fiscal",kind="files",producer="backup-seven",producer_version="\d+\.\d+\.\d+",site="test-server"\} 1'
     }
 
+    It 'derives the expected interval from Schedule when ExpectedIntervalHours is absent' {
+        Enable-TestMonitoring
+        $text = (Get-Content -LiteralPath $script:ConfigPath -Raw).TrimEnd()
+        $text = $text.Substring(0, $text.Length - 1) + @"
+    Schedule = @{
+        Tasks = @(
+            '12:00'
+            '19:00'
+            @{ Mode = 'Database'; Frequency = 'Weekly'; Days = @('Sunday'); At = '03:00'; Enabled = `$false }
+        )
+    }
+}
+"@
+        Set-Content -LiteralPath $script:ConfigPath -Value $text
+
+        Invoke-TestBackup -Mode Fiscal | Should -Be 0
+
+        Get-TestMetric fiscal 'backup_expected_interval_seconds' | Should -Be '61200'
+    }
+
     It 'keeps the last success when a later attempt fails' {
         Enable-TestMonitoring
         Invoke-TestBackup -Mode Fiscal | Should -Be 0
