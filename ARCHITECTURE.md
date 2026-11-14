@@ -20,7 +20,7 @@ criá-las.
 
 | Componente | Contrato |
 | --- | --- |
-| `Setup-BackupSeven.ps1` | Setup assistido e opcional: perguntar os dados, gravar `config.psd1` e os arquivos de `Secrets`, restringir `Secrets` a SYSTEM e Administradores, testar dependências e oferecer as tarefas agendadas. Não participa da execução do backup. |
+| `Setup-BackupSeven.ps1` | Setup assistido, opcional e reexecutável: perguntar os dados com os valores atuais como padrão e alterar somente o que mudou (`config.psd1`, `Secrets`, ACL de `Secrets`, ação das tarefas agendadas que executam o `Backup-Seven.ps1`), desbloquear os arquivos do pacote e testar dependências. Não participa da execução do backup. |
 | `Backup-Seven.ps1` | Validar entrada e configuração, adquirir o bloqueio de execução, coordenar os pipelines solicitados, aplicar retenção e definir o exit code do processo. |
 | `Logging.psm1` | Gravar eventos UTF-8 de uma linha com data, severidade, ID da execução, modo e etapa. Chamadores nunca devem fornecer segredos como mensagens de log. |
 | `Archive.psm1` | Criar um `.7z` único com o paralelismo configurado, rejeitar qualquer exit code não zero do 7-Zip, verificar se a saída não está vazia e executar `7z test`. |
@@ -185,8 +185,8 @@ Os exit codes são intencionalmente poucos e estáveis:
 
 ## Contrato de agendamento
 
-O Agendador de Tarefas executa o PowerShell 7 com `-NoProfile -NonInteractive`
-e a opção "Executar independentemente de o usuário estar conectado". As tarefas
+O Agendador de Tarefas executa o PowerShell 7 com `-NoProfile -NonInteractive
+-ExecutionPolicy Bypass` (os scripts do pacote não são assinados) e a opção "Executar independentemente de o usuário estar conectado". As tarefas
 regulares selecionam explicitamente `Database` ou `Fiscal`; `Full` é destinado
 a uma execução completa solicitada por um operador. A conta do agendador deve
 ter acesso a todos os caminhos locais e arquivos de credenciais configurados.

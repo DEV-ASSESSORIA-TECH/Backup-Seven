@@ -4,6 +4,29 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [0.4.1] - 2026-11-14
+
+### Corrigido
+
+- O teste do S3 no setup não exige mais a permissão `s3:ListBucket`, que o
+  backup não usa: credencial aceita sem permissão de listar vira aviso;
+  credencial inválida continua sendo erro.
+- Tarefas agendadas executam o `Backup-Seven.ps1` com
+  `-ExecutionPolicy Bypass`, para não serem recusadas pela política de execução
+  com os arquivos não assinados do pacote.
+- Pasta do Grafana Alloy ainda inexistente vira aviso no setup, com a
+  orientação de rodar o `alloyctl`, em vez de erro.
+
+### Alterado
+
+- O setup pode ser executado sobre uma instalação existente e altera somente o
+  necessário: `config.psd1` só é regravado (com cópia) quando algum valor muda,
+  a ACL de `Secrets` só é reaplicada quando difere, e as tarefas existentes que
+  executam o `Backup-Seven.ps1` têm apenas a ação ajustada, mantendo gatilhos e
+  conta. As tarefas padrão só são oferecidas quando não há nenhuma.
+- O setup remove a marca de arquivo baixado da internet dos arquivos da pasta.
+- `Monitoring.BackupIds` é preservado ao regravar a configuração.
+
 ## [0.4.0] - 2026-11-13
 
 ### Adicionado
