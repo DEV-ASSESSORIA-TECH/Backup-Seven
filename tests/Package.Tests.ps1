@@ -79,7 +79,7 @@ Describe 'Production package' {
         $configContent | Should -Match "Name = 'a_estoque'"
         $configContent | Should -Match "'12:00'"
         $configContent | Should -Match "'19:00'"
-        $configContent | Should -Not -Match 'ExpectedIntervalHours = @'
+        $configContent | Should -Not -Match '(?m)^\s*ExpectedIntervalHours\s*='
         $mysqlContent | Should -Match '^\[client\]'
         $mysqlContent | Should -Match 'password=REPLACE_WITH_BACKUP_PASSWORD'
         $rcloneContent | Should -Match '^\[s3\]'
