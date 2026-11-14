@@ -28,7 +28,7 @@ executáveis é incluído no pacote.
 O ZIP de produção contém somente:
 
 ```text
-BackupSeven-0.4.0.zip
+BackupSeven-0.4.1.zip
 ├── Backup-Seven.ps1
 ├── Setup-BackupSeven.ps1
 ├── config.psd1
@@ -100,27 +100,43 @@ Administrador**, dentro da pasta extraída:
 
 ```powershell
 cd C:\TI\Scripts\BackupSeven
-pwsh -File .\Setup-BackupSeven.ps1
+pwsh -ExecutionPolicy Bypass -File .\Setup-BackupSeven.ps1
 ```
+
+`-ExecutionPolicy Bypass` é necessário porque os arquivos extraídos de um ZIP
+baixado ficam marcados como vindos da internet e não são assinados. O próprio
+setup remove essa marca dos arquivos da pasta.
 
 O setup:
 
-1. pergunta instância, executáveis, banco, credencial do MySQL, pasta Fiscal,
-   destino e credencial do S3 e monitoramento; os valores atuais aparecem entre
-   colchetes e Enter os mantém;
-2. grava `config.psd1` (a versão anterior fica em `config.psd1.bak-<data>`),
-   `Secrets\mysql-backup.cnf` e `Secrets\rclone.conf`; credenciais já
-   preenchidas podem ser mantidas;
-3. cria `Runtime`, `Completed` e `Logs` e restringe `Secrets` a SYSTEM e
-   Administradores;
-4. testa a conexão com o banco, o acesso ao S3 (`rclone lsf`) e a gravação na
-   pasta do Grafana Alloy;
-5. oferece criar ou atualizar as tarefas `Full` das 12:00 e 19:00 (SYSTEM) e
-   executar um backup de teste.
+1. pergunta instância (prefixo no S3 e nos nomes dos arquivos), executáveis,
+   banco, credencial do MySQL, pasta Fiscal, destino e credencial do S3 e
+   monitoramento; os valores atuais aparecem entre colchetes e Enter os mantém;
+2. altera somente o que mudou: `config.psd1` só é regravado se algum valor
+   mudou (a versão anterior fica em `config.psd1.bak-<data>`); credenciais já
+   preenchidas em `Secrets` podem ser mantidas; a ACL de `Secrets` (SYSTEM e
+   Administradores) só é reaplicada se estiver diferente;
+3. cria `Runtime`, `Completed` e `Logs` quando não existem;
+4. testa a conexão com o banco, o acesso ao S3 e a gravação na pasta do Grafana
+   Alloy;
+5. revisa as tarefas agendadas que executam o `Backup-Seven.ps1`, com qualquer
+   nome ou pasta: só a ação é ajustada (`-ExecutionPolicy Bypass`, caminho do
+   script e PowerShell 7), mantendo gatilhos, conta e configurações. Sem
+   nenhuma tarefa, oferece criar as tarefas `Full` das 12:00 e 19:00 (SYSTEM);
+6. oferece executar um backup de teste.
 
-Pode ser executado de novo a qualquer momento, por exemplo depois de uma
-atualização ou para trocar uma senha. As seções 3 a 6 e 10 descrevem a
-configuração manual equivalente.
+Avisos (`[AVISO]`) não impedem o uso:
+
+- **S3 sem `s3:ListBucket`**: a credencial foi aceita, mas a conta não lista o
+  bucket. O BackupSeven não precisa listar; ele envia e confere cada arquivo
+  pelo nome. Confirme com o backup de teste. Credencial inválida continua sendo
+  erro.
+- **Pasta do Alloy inexistente**: rode `alloyctl` → **[1] Reaplicar** (perfil
+  servidor). Depois disso o estado passa a ser gravado sem novo setup.
+
+Pode ser executado de novo a qualquer momento, inclusive sobre uma instalação
+existente, por exemplo depois de uma atualização ou para trocar uma senha. As
+seções 3 a 6 e 10 descrevem a configuração manual equivalente.
 
 ## 3. Configuração principal
 
@@ -266,7 +282,7 @@ banco:
 
 ```powershell
 & 'C:\Program Files\PowerShell\7\pwsh.exe' `
-  -NoLogo -NoProfile -NonInteractive `
+  -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File 'C:\TI\Scripts\BackupSeven\Backup-Seven.ps1' `
   -Mode Database
 ```
@@ -275,7 +291,7 @@ Depois teste o Fiscal:
 
 ```powershell
 & 'C:\Program Files\PowerShell\7\pwsh.exe' `
-  -NoLogo -NoProfile -NonInteractive `
+  -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File 'C:\TI\Scripts\BackupSeven\Backup-Seven.ps1' `
   -Mode Fiscal
 ```
@@ -394,7 +410,7 @@ Programa:
 C:\Program Files\PowerShell\7\pwsh.exe
 
 Argumentos Full:
--NoLogo -NoProfile -NonInteractive -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Full
+-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Full
 
 Iniciar em:
 C:\TI\Scripts\BackupSeven
@@ -404,10 +420,10 @@ Como alternativa, use execuções separadas por modo:
 
 ```
 Argumentos Database:
--NoLogo -NoProfile -NonInteractive -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Database
+-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Database
 
 Argumentos Fiscal:
--NoLogo -NoProfile -NonInteractive -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Fiscal
+-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\TI\Scripts\BackupSeven\Backup-Seven.ps1" -Mode Fiscal
 
 ```
 
@@ -446,7 +462,7 @@ catch {
 # Ação executada pelas duas tarefas
 $Action = New-ScheduledTaskAction `
     -Execute $Pwsh `
-    -Argument "-NoLogo -NoProfile -NonInteractive -File `"$ScriptPath`" -Mode Full" `
+    -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -Mode Full" `
     -WorkingDirectory $WorkingDir
 
 # Configurações
