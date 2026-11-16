@@ -318,6 +318,27 @@ Context 'End-to-end orchestration' {
         Test-Path -LiteralPath $expiredLog | Should -BeFalse
     }
 
+    It 'removes empty Pending folders and keeps folders with pending archives' {
+        $emptyMonth = Join-Path $script:Runtime 'Pending/Database/2020/01'
+        $emptyYear = Join-Path $script:Runtime 'Pending/Fiscal/2019'
+        $null = New-Item -ItemType Directory -Path $emptyMonth, (Join-Path $emptyYear '12') -Force
+
+        $env:BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT = '1'
+        Invoke-TestBackup -Mode Database | Should -Be 1
+
+        Test-Path -LiteralPath $emptyMonth | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Runtime 'Pending/Database/2020') | Should -BeFalse
+        Test-Path -LiteralPath $emptyYear | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:Runtime 'Pending/Database') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:Runtime 'Pending/Fiscal') | Should -BeTrue
+        @(Get-ChildItem (Join-Path $script:Runtime 'Pending/Database') -Filter '*.7z' -File -Recurse).Count | Should -Be 1
+
+        $env:BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT = $null
+        Invoke-TestBackup -Mode Database | Should -Be 0
+
+        @(Get-ChildItem (Join-Path $script:Runtime 'Pending/Database') -Force).Count | Should -Be 0
+    }
+
     It 'returns exit code 2 for an invalid configuration' {
         Set-Content -LiteralPath $script:ConfigPath -Value '@{}'
 
@@ -361,7 +382,7 @@ Context 'Backup monitoring (textfile)' {
         Get-TestMetric fiscal 'backup_expected_interval_seconds' | Should -Be '86400'
         Get-TestMetric fiscal 'backup_last_attempt_success' | Should -Be '1'
         Get-Content -LiteralPath (Join-Path $script:Textfile 'seven__fiscal.prom') -Raw |
-            Should -Match 'backup_info\{service="seven",backup_id="fiscal",kind="files",producer="backup-seven",producer_version="\d+\.\d+\.\d+",site="test-server"\} 1'
+            Should -Match 'backup_info\{service="seven",backup_id="fiscal",criticality="alta",kind="files",producer="backup-seven",producer_version="\d+\.\d+\.\d+",site="test-server"\} 1'
     }
 
     It 'derives the expected interval from Schedule when ExpectedIntervalHours is absent' {
@@ -382,6 +403,36 @@ Context 'Backup monitoring (textfile)' {
         Invoke-TestBackup -Mode Fiscal | Should -Be 0
 
         Get-TestMetric fiscal 'backup_expected_interval_seconds' | Should -Be '61200'
+    }
+
+    It 'publishes the success due time from Schedule and the configured criticality' {
+        Enable-TestMonitoring -Extra "Criticality = @{ Fiscal = 'baixa' }"
+        $text = (Get-Content -LiteralPath $script:ConfigPath -Raw).TrimEnd()
+        $text = $text.Substring(0, $text.Length - 1) + @"
+    Schedule = @{
+        Tasks = @('12:00', '19:00')
+    }
+}
+"@
+        Set-Content -LiteralPath $script:ConfigPath -Value $text
+
+        Invoke-TestBackup -Mode Full | Should -Be 0
+
+        $lastSuccess = [long] (Get-TestMetric fiscal 'backup_last_success_timestamp_seconds')
+        $after = [DateTimeOffset]::FromUnixTimeSeconds($lastSuccess).LocalDateTime
+        $expected = if ($after.TimeOfDay -lt [TimeSpan]::FromHours(12)) { $after.Date.AddHours(12) }
+        elseif ($after.TimeOfDay -lt [TimeSpan]::FromHours(19)) { $after.Date.AddHours(19) }
+        else { $after.Date.AddDays(1).AddHours(12) }
+        Get-TestMetric fiscal 'backup_success_due_timestamp_seconds' |
+            Should -Be ([string] [DateTimeOffset]::new($expected).ToUnixTimeSeconds())
+        Get-Content -LiteralPath (Join-Path $script:Textfile 'seven__fiscal.prom') -Raw | Should -Match 'criticality="baixa"'
+        Get-Content -LiteralPath (Join-Path $script:Textfile 'seven__database.prom') -Raw | Should -Match 'criticality="alta"'
+    }
+
+    It 'returns exit code 2 for an invalid criticality' {
+        Enable-TestMonitoring -Extra "Criticality = @{ Database = 'media' }"
+
+        Invoke-TestBackup -Mode Database | Should -Be 2
     }
 
     It 'keeps the last success when a later attempt fails' {

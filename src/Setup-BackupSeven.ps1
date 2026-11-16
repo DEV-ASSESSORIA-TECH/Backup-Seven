@@ -490,6 +490,7 @@ else {
     if (-not $alloyFound) { Write-Output "  Pasta do Alloy ainda nao existe: $textfile (criada pelo alloyctl, [1] Reaplicar)." }
     $monitoringEnabled = Read-YesNo 'Gravar o estado dos backups para o Alloy?' ([bool] (Get-Setting $monitoring 'Enabled' $alloyFound))
     $backupIds = Get-Setting $monitoring 'BackupIds' $null
+    $criticality = Get-Setting $monitoring 'Criticality' ([ordered]@{ Database = 'alta'; Fiscal = 'alta' })
     # Ate a 0.4.x o setup gravava ExpectedIntervalHours fixo; com Schedule o
     # intervalo e calculado. Valor explicito so e mantido em configs com Schedule.
     $intervals = if (Test-SevenScheduleSection -Configuration $current) { Get-Setting $monitoring 'ExpectedIntervalHours' $null } else { $null }
@@ -538,6 +539,9 @@ no_check_bucket = true
     $monitoringExtra = ''
     if ($backupIds -is [System.Collections.IDictionary]) {
         $monitoringExtra += "`n        BackupIds         = $(ConvertTo-Psd1Value $backupIds 8)"
+    }
+    if ($criticality -is [System.Collections.IDictionary]) {
+        $monitoringExtra += "`n        Criticality       = $(ConvertTo-Psd1Value $criticality 8)"
     }
     if ($intervals -is [System.Collections.IDictionary]) {
         $monitoringExtra += "`n        ExpectedIntervalHours = $(ConvertTo-Psd1Value $intervals 8)"

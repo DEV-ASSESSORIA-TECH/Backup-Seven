@@ -65,6 +65,9 @@ Não é necessário banco de estado externo:
 
 - um arquivo em `Work` é temporário e deve ser limpo após a execução;
 - um arquivo em `Pending` é válido localmente, mas não foi confirmado no remoto;
+- as pastas de ano e mês de `Pending\<tipo>` que ficam vazias são removidas no
+  fim de cada execução (`Cleanup/Pending`), de baixo para cima; arquivos e a
+  pasta do tipo nunca são removidos, e uma falha aqui só gera `WARN`;
 - um arquivo em `Completed` foi enviado e confirmado remotamente;
 - somente arquivos em `Completed` participam da retenção local por idade.
 
@@ -156,6 +159,12 @@ e grava.
   `Completed\<tipo>` (timestamp do nome, que é o início do pipeline) e o valor
   do arquivo anterior. Assim o estado continua sem banco externo e não regride
   quando a retenção local remove archives.
+- O prazo do próximo sucesso é a primeira execução do `Schedule` que cobre o
+  tipo depois do último sucesso (horário local do servidor, convertido para
+  Unix). Ancorado no sucesso, não avança quando uma execução falha; sem sucesso
+  conhecido, o prazo do arquivo anterior é mantido (ou é a próxima execução, na
+  primeira gravação). Sem `Schedule`, não é publicado.
+- `criticality` (`alta` ou `baixa`, por tipo) vai em `backup_info`.
 - Gravar o estado nunca altera o resultado: qualquer erro vira `WARN` na etapa
   `<tipo>/Monitoring`.
 - A pasta pertence à instalação do Alloy, que define a ACL; o BackupSeven nunca

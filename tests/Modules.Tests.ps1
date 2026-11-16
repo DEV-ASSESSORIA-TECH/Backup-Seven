@@ -259,6 +259,24 @@ Context 'Monitoring module' {
         $content | Should -Not -Match '(?m)^[a-z_]+\{[^}]*(job|instance|host)='
     }
 
+    It 'publishes and reads back the success due time' {
+        $directory = Join-Path $script:TestRoot 'textfile-due'
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        $content = Format-SevenBackupMetric `
+            -Service 'seven' `
+            -BackupId 'fiscal' `
+            -CollectedAtUtc ([DateTime]::UtcNow) `
+            -CollectionSucceeded $true `
+            -SuccessDueTimestamp 1794700800 `
+            -InfoLabels ([ordered]@{ criticality = 'baixa' })
+
+        $content | Should -Match '(?m)^# TYPE backup_success_due_timestamp_seconds gauge$'
+        $content | Should -Match '(?m)^backup_success_due_timestamp_seconds\{service="seven",backup_id="fiscal"\} 1794700800$'
+        $content | Should -Match 'criticality="baixa"'
+        $path = Write-SevenBackupMetric -Directory $directory -Service 'seven' -BackupId 'fiscal' -Content $content
+        (Read-SevenBackupMetricState -Path $path).SuccessDueTimestamp | Should -Be 1794700800
+    }
+
     It 'omits state that is not known' {
         $content = Format-SevenBackupMetric `
             -Service 'seven' `
