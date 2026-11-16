@@ -4,6 +4,26 @@ Todas as alterações relevantes do BackupSeven são registradas neste arquivo. 
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [0.6.0] - 2026-11-16
+
+### Adicionado
+
+- Monitoramento publica `backup_success_due_timestamp_seconds`: prazo do
+  próximo sucesso, a primeira execução do `Schedule` que cobre o tipo depois
+  do último sucesso. Não avança quando uma execução falha; sem sucesso
+  conhecido, mantém o primeiro prazo publicado. Os alertas do Grafana passam a
+  usar o prazo quando ele existe (preciso em qualquer agenda).
+- `Monitoring.Criticality` por tipo (`alta`, padrão, ou `baixa`), publicada
+  como `criticality` em `backup_info`; `baixa` desce um nível os alertas do
+  backup. Valor inválido encerra com exit code `2`. O setup inclui a chave.
+
+### Corrigido
+
+- Pastas de ano e mês que ficavam vazias em `Runtime\Pending\<tipo>` depois
+  do envio passam a ser removidas no fim de cada execução (`Cleanup/Pending`),
+  inclusive as já acumuladas. Arquivos pendentes e a pasta do tipo nunca são
+  removidos, e uma falha na limpeza só gera aviso.
+
 ## [0.5.0] - 2026-11-14
 
 ### Adicionado

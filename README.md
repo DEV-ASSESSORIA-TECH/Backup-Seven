@@ -69,7 +69,7 @@ agendamentos precisam ser aplicados (`Aplicar-Configuracao.bat`).
 | `Archive` | `CompressionLevel`, `CpuLimitPercent` | Nível do 7-Zip (`-mx`) e percentual de processadores lógicos convertido em threads (`-mmt`, mínimo 1). Não é cota rígida de CPU. |
 | `Paths` | `RuntimeRoot`, `CompletedRoot`, `LogRoot` | Pastas locais. |
 | `Retention` | `CompletedDays`, `LogDays` | Retenção local por idade (mínimo 1 dia). |
-| `Monitoring` | `Enabled`, `TextfileDirectory`, `Service`, `BackupIds`, `ExpectedIntervalHours` | Estado para o Grafana Alloy. Opcional. |
+| `Monitoring` | `Enabled`, `TextfileDirectory`, `Service`, `BackupIds`, `Criticality`, `ExpectedIntervalHours` | Estado para o Grafana Alloy. Opcional. `Criticality` por tipo: `alta` (padrão) ou `baixa`, que desce um nível os alertas do backup. |
 | `Schedule` | `Tasks` | Tarefas agendadas. Opcional. |
 
 `Database.ExtraArguments` contém `--skip-events` porque a conta de backup não
@@ -149,7 +149,9 @@ S3:
 ```
 
 Um archive passa de `Pending` para `Completed` só depois de `copyto` e
-`check`. `Pending` nunca é apagado pela retenção. Retenção remota, se desejada,
+`check`. Archives em `Pending` nunca são apagados pela retenção; as pastas de
+ano e mês que ficam vazias depois do envio são removidas no fim de cada
+execução. Retenção remota, se desejada,
 é uma Lifecycle Rule do bucket. As linhas dos logs usam a hora local do
 servidor.
 
@@ -182,8 +184,9 @@ publica no job `integrations/backup`, no contrato genérico de backups
 | `backup_last_attempt_degraded` | `1` quando o banco foi publicado como `DEGRADED`. |
 | `backup_last_attempt_duration_seconds` | Duração do pipeline. |
 | `backup_expected_interval_seconds` | Derivado do `Schedule` ou de `ExpectedIntervalHours`. |
+| `backup_success_due_timestamp_seconds` | Prazo do próximo sucesso: primeira execução do `Schedule` que cobre o tipo depois do último sucesso. Não avança quando uma execução falha; sem sucesso conhecido, fica no primeiro prazo publicado. Só com `Schedule`. |
 | `backup_collection_*` | Momento da gravação e se o estado pôde ser lido. |
-| `backup_info` | `kind`, `producer`, `producer_version` e `site` (`InstanceName` em minúsculas). |
+| `backup_info` | `kind`, `producer`, `producer_version`, `site` (`InstanceName` em minúsculas) e `criticality`. |
 
 - O último sucesso também é lido do arquivo anterior, para não voltar a `0`
   quando a retenção local remove archives antigos.

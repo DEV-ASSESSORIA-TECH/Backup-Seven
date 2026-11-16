@@ -78,6 +78,38 @@ Context 'Expected interval' {
     }
 }
 
+Context 'Next run' {
+    It 'returns the first covering run strictly after the given time' {
+        $tasks = Get-TestTask @('12:00', '19:00')
+        $after = [DateTime]::new(2026, 11, 16, 12, 0, 5)
+
+        Get-SevenScheduleNextRun -Tasks $tasks -BackupType Database -After $after |
+            Should -Be ([DateTime]::new(2026, 11, 16, 19, 0, 0))
+        Get-SevenScheduleNextRun -Tasks $tasks -BackupType Fiscal -After ([DateTime]::new(2026, 11, 16, 19, 30, 0)) |
+            Should -Be ([DateTime]::new(2026, 11, 17, 12, 0, 0))
+    }
+
+    It 'follows weekly and monthly calendars and skips other types and disabled tasks' {
+        $tasks = Get-TestTask @(
+            @{ Mode = 'Database'; Frequency = 'Weekly'; Days = @('Saturday'); At = '03:00' }
+            @{ Mode = 'Fiscal'; Frequency = 'Monthly'; DaysOfMonth = @('Last'); At = '22:00' }
+            @{ Mode = 'Full'; At = '08:00'; Enabled = $false }
+        )
+        $after = [DateTime]::new(2026, 11, 16, 10, 0, 0)  # segunda-feira
+
+        Get-SevenScheduleNextRun -Tasks $tasks -BackupType Database -After $after |
+            Should -Be ([DateTime]::new(2026, 11, 21, 3, 0, 0))
+        Get-SevenScheduleNextRun -Tasks $tasks -BackupType Fiscal -After $after |
+            Should -Be ([DateTime]::new(2026, 11, 30, 22, 0, 0))
+    }
+
+    It 'returns null when no enabled task covers the type' {
+        $tasks = Get-TestTask @(@{ Mode = 'Database'; At = '03:00' })
+
+        Get-SevenScheduleNextRun -Tasks $tasks -BackupType Fiscal -After ([DateTime]::Now) | Should -BeNullOrEmpty
+    }
+}
+
 Context 'Task definition' {
     It 'builds a SYSTEM task with ExecutionPolicy Bypass and a stable fingerprint' {
         $task = @(Get-TestTask @(@{ Mode = 'Fiscal'; Frequency = 'Monthly'; DaysOfMonth = @(1, 'Last'); At = '22:00' }))[0]

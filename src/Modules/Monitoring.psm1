@@ -13,6 +13,7 @@ $script:MetricHelp = [ordered]@{
     backup_last_attempt_duration_seconds   = 'Duracao da ultima tentativa de backup.'
     backup_last_attempt_degraded           = 'Ultima tentativa publicou um backup degradado (1 = sim, 0 = nao).'
     backup_expected_interval_seconds       = 'Intervalo esperado entre backups bem-sucedidos.'
+    backup_success_due_timestamp_seconds   = 'Primeira execucao agendada depois do ultimo sucesso, prazo do proximo sucesso (Unix).'
     backup_collection_timestamp_seconds    = 'Momento em que o produtor gerou este arquivo (Unix).'
     backup_collection_success              = 'Produtor conseguiu observar o estado do backup (1 = sim, 0 = nao).'
     backup_info                            = 'Descricao do backup (valor sempre 1).'
@@ -60,14 +61,15 @@ function Get-SevenBackupMetricFileName {
 
 function Read-SevenBackupMetricState {
     <#
-    Reads the last known success from a previously written file, so a success
-    that already left the local retention window keeps being reported.
+    Reads the last known success (and success due time) from a previously
+    written file, so a success that already left the local retention window
+    keeps being reported and a never-succeeded backup keeps its first due time.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param([Parameter(Mandatory)][string] $Path)
 
-    $state = [pscustomobject]@{ LastSuccessTimestamp = [long] 0; LastSuccessSizeBytes = $null }
+    $state = [pscustomobject]@{ LastSuccessTimestamp = [long] 0; LastSuccessSizeBytes = $null; SuccessDueTimestamp = $null }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return $state
     }
@@ -78,6 +80,9 @@ function Read-SevenBackupMetricState {
         }
         elseif ($line -match '^backup_last_success_size_bytes\{[^}]*\}\s+(?<value>\d+)\s*$') {
             $state.LastSuccessSizeBytes = [long] $Matches.value
+        }
+        elseif ($line -match '^backup_success_due_timestamp_seconds\{[^}]*\}\s+(?<value>\d+)\s*$') {
+            $state.SuccessDueTimestamp = [long] $Matches.value
         }
     }
 
@@ -99,6 +104,7 @@ function Format-SevenBackupMetric {
         [long] $LastSuccessTimestamp = 0,
         [Nullable[long]] $LastSuccessSizeBytes,
         [Nullable[double]] $ExpectedIntervalSeconds,
+        [Nullable[long]] $SuccessDueTimestamp,
         [System.Collections.IDictionary] $InfoLabels = @{}
     )
 
@@ -133,6 +139,10 @@ function Format-SevenBackupMetric {
 
     if ($null -ne $ExpectedIntervalSeconds -and $ExpectedIntervalSeconds -gt 0) {
         $samples.backup_expected_interval_seconds = ConvertTo-SevenMetricNumber -Value $ExpectedIntervalSeconds
+    }
+
+    if ($null -ne $SuccessDueTimestamp -and $SuccessDueTimestamp -gt 0) {
+        $samples.backup_success_due_timestamp_seconds = [string] $SuccessDueTimestamp
     }
 
     $builder = [System.Text.StringBuilder]::new()

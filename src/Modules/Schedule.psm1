@@ -213,6 +213,34 @@ function Get-SevenScheduleMaxGap {
     return $max
 }
 
+function Get-SevenScheduleNextRun {
+    <#
+    Primeira execucao ativa que cobre o tipo (Full cobre Database e Fiscal)
+    estritamente depois de -After, no horario local do servidor (o mesmo das
+    tarefas agendadas). Devolve $null quando nenhuma tarefa ativa cobre o tipo.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Tasks,
+        [Parameter(Mandatory)][ValidateSet('Database', 'Fiscal')][string] $BackupType,
+        [Parameter(Mandatory)][DateTime] $After
+    )
+
+    $covering = @($Tasks | Where-Object { $_.Enabled -and $_.Mode -in @('Full', $BackupType) })
+    if ($covering.Count -eq 0) { return $null }
+
+    $next = $null
+    for ($offset = 0; $offset -lt 400 -and $null -eq $next; $offset++) {
+        $date = $After.Date.AddDays($offset)
+        foreach ($task in $covering) {
+            if (-not (Test-SevenScheduleRunsOn -Task $task -Date $date)) { continue }
+            $run = $date.Add([TimeSpan]::Parse($task.At, [System.Globalization.CultureInfo]::InvariantCulture))
+            if ($run -gt $After -and ($null -eq $next -or $run -lt $next)) { $next = $run }
+        }
+    }
+    return $next
+}
+
 function Get-SevenScheduleWarning {
     <#
     Avisos que nao impedem a aplicacao: tarefas ativas no mesmo horario, que
@@ -328,4 +356,4 @@ function Get-SevenTaskDefinitionHash {
     return $null
 }
 
-Export-ModuleMember -Function Get-SevenScheduleTaskFolder, Get-SevenScheduleTaskSecurity, Test-SevenScheduleSection, Get-SevenScheduleTask, Get-SevenScheduleMaxGap, Get-SevenScheduleWarning, Get-SevenTaskDefinition, Get-SevenTaskDefinitionHash
+Export-ModuleMember -Function Get-SevenScheduleTaskFolder, Get-SevenScheduleTaskSecurity, Test-SevenScheduleSection, Get-SevenScheduleTask, Get-SevenScheduleMaxGap, Get-SevenScheduleNextRun, Get-SevenScheduleWarning, Get-SevenTaskDefinition, Get-SevenTaskDefinitionHash

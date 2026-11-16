@@ -107,6 +107,20 @@ Schedule = @{
   "Credencial ... já preenchida. Manter?".
 - Teste sem mudar nada: `Aplicar-Configuracao.bat`.
 
+## 4.1. Criticidade dos backups
+
+Em `config.psd1`, `Monitoring.Criticality` define, por tipo, se o backup é
+`alta` (padrão) ou `baixa`. Com `baixa`, os alertas do backup descem um nível
+(crítico vira warning, warning vira info). Vale na próxima execução, sem
+aplicar nada:
+
+```powershell
+Monitoring = @{
+    ...
+    Criticality = @{ Database = 'alta'; Fiscal = 'baixa' }
+}
+```
+
 ## 5. Conferir se está funcionando
 
 1. **Último log**: `Logs\`, o arquivo mais recente. Deve terminar com

@@ -70,6 +70,13 @@
             Fiscal   = 'fiscal'
         }
 
+        # Criticality of each backup ('alta' or 'baixa'), published in
+        # backup_info. 'baixa' lowers its alerts by one severity level.
+        Criticality = @{
+            Database = 'alta'
+            Fiscal   = 'alta'
+        }
+
         # The expected gap between successful backups (used by the generic
         # "backup overdue" alert) is derived from Schedule. Set
         # ExpectedIntervalHours = @{ Database = 24; Fiscal = 24 } only to

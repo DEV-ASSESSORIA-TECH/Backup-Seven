@@ -241,19 +241,46 @@ function Get-MonitoringSetting {
         }
     }
 
-    # Sem ExpectedIntervalHours explicito, o intervalo vem dos agendamentos
-    # (Schedule): maior intervalo entre execucoes que cobrem cada tipo. Um
-    # Schedule invalido nao impede o backup; so fica sem intervalo esperado.
+    # Criticidade publicada em backup_info: baixa desce um nivel os alertas do backup.
+    $criticality = @{ Database = 'alta'; Fiscal = 'alta' }
+    if ($section.Contains('Criticality') -and $null -ne $section.Criticality) {
+        if ($section.Criticality -isnot [System.Collections.IDictionary]) {
+            throw 'Monitoring.Criticality must be a hashtable.'
+        }
+
+        foreach ($key in @($section.Criticality.Keys)) {
+            if ($key -notin @('Database', 'Fiscal')) {
+                throw "Monitoring.Criticality accepts only Database and Fiscal: $key"
+            }
+
+            $value = [string] $section.Criticality[$key]
+            if ($value -cnotin @('alta', 'baixa')) {
+                throw "Monitoring.Criticality.$key must be 'alta' or 'baixa': '$value'"
+            }
+
+            $criticality[$key] = $value
+        }
+    }
+
+    # Agendamentos (Schedule): sem ExpectedIntervalHours explicito, o intervalo
+    # e o maior intervalo entre execucoes que cobrem cada tipo; o prazo do
+    # proximo sucesso tambem sai deles. Um Schedule invalido nao impede o
+    # backup; so fica sem intervalo e sem prazo.
     $scheduleWarning = $null
-    foreach ($backupType in @('Database', 'Fiscal')) {
-        if ($intervals.Contains($backupType)) { continue }
+    $scheduleTasks = $null
+    if (Test-SevenScheduleSection -Configuration $Configuration) {
         try {
-            $scheduled = @(Get-SevenScheduleTask -Configuration $Configuration)
-            $gapHours = Get-SevenScheduleMaxGap -Tasks $scheduled -BackupType $backupType
-            if ($null -ne $gapHours) { $intervals[$backupType] = [double] $gapHours * 3600 }
+            $scheduleTasks = @(Get-SevenScheduleTask -Configuration $Configuration)
         }
         catch {
-            $scheduleWarning = "Schedule could not be read; expected interval not published: $($_.Exception.Message)"
+            $scheduleWarning = "Schedule could not be read; expected interval and success due not published: $($_.Exception.Message)"
+        }
+    }
+    if ($null -ne $scheduleTasks) {
+        foreach ($backupType in @('Database', 'Fiscal')) {
+            if ($intervals.Contains($backupType)) { continue }
+            $gapHours = Get-SevenScheduleMaxGap -Tasks $scheduleTasks -BackupType $backupType
+            if ($null -ne $gapHours) { $intervals[$backupType] = [double] $gapHours * 3600 }
         }
     }
 
@@ -261,7 +288,9 @@ function Get-MonitoringSetting {
         TextfileDirectory       = [string] $section.TextfileDirectory
         Service                 = $service
         BackupIds               = $backupIds
+        Criticality             = $criticality
         ExpectedIntervalSeconds = $intervals
+        ScheduleTasks           = $scheduleTasks
         ScheduleWarning         = $scheduleWarning
     }
 }
@@ -320,10 +349,12 @@ function Publish-BackupMonitoring {
         $collectionSucceeded = $true
         $lastSuccessTimestamp = [long] 0
         $lastSuccessSizeBytes = $null
+        $previousDue = $null
         try {
             $previous = Read-SevenBackupMetricState -Path (Join-Path $Monitoring.TextfileDirectory $fileName)
             $lastSuccessTimestamp = $previous.LastSuccessTimestamp
             $lastSuccessSizeBytes = $previous.LastSuccessSizeBytes
+            $previousDue = $previous.SuccessDueTimestamp
             $latest = Get-LastCompletedArchive -CompletedRoot ([string] $Configuration.Paths.CompletedRoot) -BackupType $BackupType
             if ($null -ne $latest) {
                 $latestTimestamp = [DateTimeOffset]::new($latest.Timestamp).ToUnixTimeSeconds()
@@ -343,6 +374,28 @@ function Publish-BackupMonitoring {
             $expectedInterval = [double] $Monitoring.ExpectedIntervalSeconds[$BackupType]
         }
 
+        # Prazo do proximo sucesso: primeira execucao agendada depois do ultimo
+        # sucesso (ponto de recuperacao). Ancorado no sucesso, nao avanca quando
+        # uma execucao falha. Sem sucesso conhecido, mantem o primeiro prazo
+        # publicado (ou a proxima execucao, na primeira vez).
+        $successDue = $null
+        if ($collectionSucceeded -and $null -ne $Monitoring.ScheduleTasks) {
+            $next = $null
+            if ($lastSuccessTimestamp -gt 0) {
+                $after = [DateTimeOffset]::FromUnixTimeSeconds($lastSuccessTimestamp).LocalDateTime
+                $next = Get-SevenScheduleNextRun -Tasks $Monitoring.ScheduleTasks -BackupType $BackupType -After $after
+            }
+            elseif ($null -ne $previousDue -and $previousDue -gt 0) {
+                $successDue = [long] $previousDue
+            }
+            else {
+                $next = Get-SevenScheduleNextRun -Tasks $Monitoring.ScheduleTasks -BackupType $BackupType -After ([DateTime]::Now)
+            }
+            if ($null -ne $next) {
+                $successDue = [DateTimeOffset]::new($next).ToUnixTimeSeconds()
+            }
+        }
+
         $kind = if ($BackupType -eq 'Database') { 'database' } else { 'files' }
         $content = Format-SevenBackupMetric `
             -Service $Monitoring.Service `
@@ -356,11 +409,13 @@ function Publish-BackupMonitoring {
             -LastSuccessTimestamp $lastSuccessTimestamp `
             -LastSuccessSizeBytes $lastSuccessSizeBytes `
             -ExpectedIntervalSeconds $expectedInterval `
+            -SuccessDueTimestamp $successDue `
             -InfoLabels ([ordered]@{
                 kind             = $kind
                 producer         = 'backup-seven'
                 producer_version = $Version
                 site             = ([string] $Configuration.InstanceName).ToLowerInvariant()
+                criticality      = [string] $Monitoring.Criticality[$BackupType]
             })
 
         $path = Write-SevenBackupMetric -Directory $Monitoring.TextfileDirectory -Service $Monitoring.Service -BackupId $backupId -Content $content
@@ -956,6 +1011,38 @@ function Remove-ExpiredLocalFile {
     return $succeeded
 }
 
+function Remove-EmptyPendingDirectory {
+    <#
+    Remove as pastas vazias de Pending\<tipo> (ano e mes que ficaram para tras
+    depois do envio), de baixo para cima. Nunca remove arquivos nem a pasta do
+    tipo; uma pasta com archive pendente permanece. Devolve quantas removeu.
+    #>
+    param([Parameter(Mandatory)][string] $PendingRoot)
+
+    $removed = 0
+    foreach ($backupType in @('Database', 'Fiscal')) {
+        $typeRoot = Join-Path $PendingRoot $backupType
+        if (-not (Test-Path -LiteralPath $typeRoot -PathType Container)) {
+            continue
+        }
+
+        $resolvedRoot = [System.IO.Path]::GetFullPath($typeRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        $directories = @(Get-ChildItem -LiteralPath $typeRoot -Directory -Recurse -Force |
+                Sort-Object { $_.FullName.Length } -Descending)
+        foreach ($directory in $directories) {
+            $path = [System.IO.Path]::GetFullPath($directory.FullName)
+            if (-not $path.StartsWith($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ($directory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+            if (@(Get-ChildItem -LiteralPath $path -Force).Count -gt 0) { continue }
+
+            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+            $removed++
+        }
+    }
+
+    return $removed
+}
+
 function Remove-RunWorkDirectory {
     param(
         [Parameter(Mandatory)][string] $WorkPath,
@@ -1089,6 +1176,17 @@ function Invoke-BackupSeven {
         catch {
             $maintenanceSucceeded = $false
             Write-BackupLog -Level ERROR -Stage 'Cleanup/Work' -Message $_.Exception.Message
+        }
+
+        # Pastas vazias de Pending: cosmetico, nunca altera o resultado.
+        try {
+            $removedDirectories = Remove-EmptyPendingDirectory -PendingRoot $layout.Pending
+            if ($removedDirectories -gt 0) {
+                Write-BackupLog -Level INFO -Stage 'Cleanup/Pending' -Message "Removed $removedDirectories empty Pending folder(s)."
+            }
+        }
+        catch {
+            Write-BackupLog -Level WARN -Stage 'Cleanup/Pending' -Message $_.Exception.Message
         }
 
         if (-not (Remove-ExpiredLocalFile -Configuration $configuration -Layout $layout)) {
