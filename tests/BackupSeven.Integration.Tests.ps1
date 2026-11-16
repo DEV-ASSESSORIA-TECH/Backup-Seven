@@ -382,7 +382,7 @@ Context 'Backup monitoring (textfile)' {
         Get-TestMetric fiscal 'backup_expected_interval_seconds' | Should -Be '86400'
         Get-TestMetric fiscal 'backup_last_attempt_success' | Should -Be '1'
         Get-Content -LiteralPath (Join-Path $script:Textfile 'seven__fiscal.prom') -Raw |
-            Should -Match 'backup_info\{service="seven",backup_id="fiscal",kind="files",producer="backup-seven",producer_version="\d+\.\d+\.\d+",site="test-server"\} 1'
+            Should -Match 'backup_info\{service="seven",backup_id="fiscal",criticality="alta",kind="files",producer="backup-seven",producer_version="\d+\.\d+\.\d+",site="test-server"\} 1'
     }
 
     It 'derives the expected interval from Schedule when ExpectedIntervalHours is absent' {
