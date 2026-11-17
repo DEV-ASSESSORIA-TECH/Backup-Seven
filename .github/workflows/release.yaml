@@ -2,11 +2,70 @@ name: Release
 on:
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: dbbackup-release
+  cancel-in-progress: false
 jobs:
-  qualification-gate:
+  release:
     runs-on: windows-latest
-    steps:
-      - name: Require final v1 qualification
+    defaults:
+      run:
         shell: pwsh
-        run: throw 'DBBackup v1 is a development snapshot. Recovery review and release steps 7-11 are pending.'
+    steps:
+      - name: Checkout selected commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install verification dependencies
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+      - name: Validate version and release history
+        run: |
+          $version = (Get-Content ./VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release VERSION.' }
+          if (-not (Select-String -LiteralPath ./CHANGELOG.md -Pattern "^## \[$([regex]::Escape($version))\]" -Quiet)) {
+            throw 'CHANGELOG is missing the release section.'
+          }
+          "DBBACKUP_VERSION=$version" >> $env:GITHUB_ENV
+          "DBBACKUP_TAG=v$version" >> $env:GITHUB_ENV
+      - name: Verify source and package contracts
+        run: ./scripts/verify.ps1
+      - name: Build verified release package
+        run: |
+          $package = & ./scripts/package.ps1
+          $recorded = ((Get-Content "$($package.FullName).sha256" -Raw).Trim() -split '\s+')[0]
+          if ($recorded -cne (Get-FileHash $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()) {
+            throw 'Release archive checksum mismatch.'
+          }
+      - name: Ensure tag and release are absent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          foreach ($resource in @("git/ref/tags/$env:DBBACKUP_TAG", "releases/tags/$env:DBBACKUP_TAG")) {
+            $exists = $false
+            try {
+              $null = Invoke-WebRequest -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/$resource" -Headers @{
+                Authorization = "Bearer $env:GH_TOKEN"
+                Accept = 'application/vnd.github+json'
+              }
+              $exists = $true
+            }
+            catch {
+              $status = $_.Exception.Response.StatusCode
+              if ([int] $status -ne 404) { throw "GitHub existence check failed (HTTP $status)." }
+            }
+            if ($exists) { throw "Tag/release already exists: $resource" }
+          }
+      - name: Publish release for the verified commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "dist/DBBackup-$env:DBBACKUP_VERSION.zip"
+          gh release create $env:DBBACKUP_TAG $zip "$zip.sha256" --target $env:GITHUB_SHA --title "DBBackup $env:DBBACKUP_VERSION" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release creation failed.' }

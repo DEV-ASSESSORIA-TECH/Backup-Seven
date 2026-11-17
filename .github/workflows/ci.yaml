@@ -29,5 +29,17 @@ jobs:
           Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
           Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
 
-      - name: Verify DBBackup development snapshot
+      - name: Verify DBBackup source and package contracts
         run: ./scripts/verify.ps1
+
+      - name: Build DBBackup distribution
+        run: ./scripts/package.ps1
+
+      - name: Upload package and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBBackup-package
+          path: |
+            dist/DBBackup-*.zip
+            dist/DBBackup-*.zip.sha256
+          if-no-files-found: error

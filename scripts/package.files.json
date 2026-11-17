@@ -1,0 +1,126 @@
+[
+  {
+    "source": "src/Backup.ps1",
+    "target": "Backup.ps1"
+  },
+  {
+    "source": "src/Setup.ps1",
+    "target": "Setup.ps1"
+  },
+  {
+    "source": "src/Diagnose.ps1",
+    "target": "Diagnose.ps1"
+  },
+  {
+    "source": "src/Setup.bat",
+    "target": "Setup.bat"
+  },
+  {
+    "source": "src/Aplicar-Configuracao.bat",
+    "target": "Aplicar-Configuracao.bat"
+  },
+  {
+    "source": "src/Modules/Core/Archive.psm1",
+    "target": "Modules/Core/Archive.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Artifacts.psm1",
+    "target": "Modules/Core/Artifacts.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Capacity.psm1",
+    "target": "Modules/Core/Capacity.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Configuration.psm1",
+    "target": "Modules/Core/Configuration.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Encryption.psm1",
+    "target": "Modules/Core/Encryption.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Monitoring.psm1",
+    "target": "Modules/Core/Monitoring.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Observation.psm1",
+    "target": "Modules/Core/Observation.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Process.psm1",
+    "target": "Modules/Core/Process.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Runner.psm1",
+    "target": "Modules/Core/Runner.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Runtime.psm1",
+    "target": "Modules/Core/Runtime.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Schedule.psm1",
+    "target": "Modules/Core/Schedule.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Setup.psm1",
+    "target": "Modules/Core/Setup.psm1"
+  },
+  {
+    "source": "src/Modules/Core/Storage.psm1",
+    "target": "Modules/Core/Storage.psm1"
+  },
+  {
+    "source": "src/Modules/Providers/Directory/Directory.psm1",
+    "target": "Modules/Providers/Directory/Directory.psm1"
+  },
+  {
+    "source": "src/Modules/Providers/MySQL/Client.psm1",
+    "target": "Modules/Providers/MySQL/Client.psm1"
+  },
+  {
+    "source": "src/Modules/Providers/MySQL/MySQL.psm1",
+    "target": "Modules/Providers/MySQL/MySQL.psm1"
+  },
+  {
+    "source": "src/Modules/Providers/Providers.psm1",
+    "target": "Modules/Providers/Providers.psm1"
+  },
+  {
+    "source": "src/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1",
+    "target": "Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
+  },
+  {
+    "source": "src/Templates/MySQL/config.example.psd1",
+    "target": "Templates/MySQL/config.example.psd1"
+  },
+  {
+    "source": "src/Templates/SQLAnywhere/config.example.psd1",
+    "target": "Templates/SQLAnywhere/config.example.psd1"
+  },
+  {
+    "source": "VERSION",
+    "target": "VERSION"
+  },
+  {
+    "source": "RUNBOOK.md",
+    "target": "RUNBOOK.md"
+  },
+  {
+    "source": "README.md",
+    "target": "README.md"
+  },
+  {
+    "source": "ARCHITECTURE.md",
+    "target": "ARCHITECTURE.md"
+  },
+  {
+    "source": "contracts/v1.md",
+    "target": "contracts/v1.md"
+  },
+  {
+    "source": "contracts/distribution.md",
+    "target": "contracts/distribution.md"
+  }
+]
