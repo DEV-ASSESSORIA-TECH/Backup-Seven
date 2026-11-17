@@ -31,6 +31,9 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
   agendada derivado dele, e limpeza de Work/Staging de execuções interrompidas.
 - Estimativa automática de espaço (histórico do trabalho ou sonda MySQL),
   `Retention.KeepLocalPayload`, `Storage.Destination` e resumo de pendências.
+- Menos I/O: diretórios arquivados no lugar, sem cópia para Work; payload em
+  claro apagado antes da criptografia; retenção sem recalcular hashes; uma só
+  leitura do pacote para SHA-256/MD5 e conferência remota por `rclone lsjson`.
 - Pacote DBBackup com lista explícita, manifest interno, SHA-256 e workflow
   manual de release que verifica o commit antes de publicar.
 

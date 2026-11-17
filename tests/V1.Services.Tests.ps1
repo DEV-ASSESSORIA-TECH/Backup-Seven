@@ -119,6 +119,39 @@ Context 'Archive module' {
 
         Get-Content -LiteralPath $archive -Raw | Should -Match 'ENTRY:manifest\.json'
     }
+
+    It 'archives an external directory in place under content/ with the manifest at the root' {
+        foreach ($leaf in @('documents', 'manifest.json', 'content')) {
+            $meta = Join-Path $script:TestRoot "meta-$([guid]::NewGuid().ToString('N'))"
+            $parent = Join-Path $script:TestRoot "src-$([guid]::NewGuid().ToString('N'))"
+            $content = Join-Path $parent $leaf
+            $null = New-Item -ItemType Directory -Path $meta, (Join-Path $content 'sub')
+            Set-Content -LiteralPath (Join-Path $meta 'manifest.json') -Value '{"producer":"dbbackup"}'
+            Set-Content -LiteralPath (Join-Path $content 'sub/file.txt') -Value 'data'
+            $archive = Join-Path $script:TestRoot "external-$([guid]::NewGuid().ToString('N')).7z"
+            $null = New-DBArchiveWithContent -SevenZipPath $script:SevenZip -MetadataPath $meta -ContentPath $content -ArchivePath $archive
+            $text = Get-Content -LiteralPath $archive -Raw
+            $text | Should -Match '(?m)^ENTRY:manifest\.json$'
+            $text | Should -Match '(?m)^ENTRY:content/sub/file\.txt$'
+            if ($leaf -cne 'content') { $text | Should -Not -Match "ENTRY:$([regex]::Escape($leaf))/" }
+            Test-Path -LiteralPath (Join-Path $content 'sub/file.txt') | Should -BeTrue
+        }
+    }
+
+    It 'removes the archive when renaming the content folder fails' {
+        $meta = Join-Path $script:TestRoot 'meta-fail'
+        $content = Join-Path $script:TestRoot 'docs-fail'
+        $null = New-Item -ItemType Directory -Path $meta, $content
+        Set-Content -LiteralPath (Join-Path $meta 'manifest.json') -Value '{}'
+        Set-Content -LiteralPath (Join-Path $content 'a.txt') -Value 'a'
+        $archive = Join-Path $script:TestRoot 'rename-fail.7z'
+        $env:DBBACKUP_FAKE_7ZIP_RENAME_EXIT = '2'
+        try {
+            { New-DBArchiveWithContent -SevenZipPath $script:SevenZip -MetadataPath $meta -ContentPath $content -ArchivePath $archive } | Should -Throw '*rename*'
+            Test-Path -LiteralPath $archive | Should -BeFalse
+        }
+        finally { $env:DBBACKUP_FAKE_7ZIP_RENAME_EXIT = $null }
+    }
 }
 
 Context 'Database module' {
@@ -206,11 +239,47 @@ Context 'Storage module' {
             -ConfigPath $script:RcloneConfig `
             -RemoteRoot 's3:bucket/backups' | Should -BeTrue
 
-        Send-DBBackupFile `
+        $sent = Send-DBBackupFile `
             -RclonePath $script:Rclone `
             -ConfigPath $script:RcloneConfig `
             -LocalPath $archive `
-            -RemotePath 's3:bucket/backups/upload.7z' | Should -Be 's3:bucket/backups/upload.7z'
+            -RemotePath 's3:bucket/backups/upload.7z'
+        $sent.RemotePath | Should -Be 's3:bucket/backups/upload.7z'
+        $sent.Verification | Should -Be 'size+md5'
+        Get-Content -LiteralPath $script:InvocationLog -Raw | Should -Not -Match '(?m)^check\|'
+    }
+
+    It 'computes SHA-256 and MD5 in one pass' {
+        $file = Join-Path $script:TestRoot 'digest.bin'
+        Set-Content -LiteralPath $file -Value 'digest me' -NoNewline
+        $digest = Get-DBFileDigest -Path $file
+        $digest.Length | Should -Be 9
+        $digest.Sha256 | Should -Be (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+        $digest.Md5 | Should -Be ([Convert]::ToHexString([Security.Cryptography.MD5]::HashData([IO.File]::ReadAllBytes($file))).ToLowerInvariant())
+    }
+
+    It 'rejects a remote MD5 that differs from the local digest' {
+        $archive = Join-Path $script:TestRoot 'md5-mismatch.7z'
+        Set-Content -LiteralPath $archive -Value 'archive'
+        $env:DBBACKUP_FAKE_RCLONE_REMOTE_MD5 = '00000000000000000000000000000000'
+        try {
+            { Send-DBBackupFile -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -LocalPath $archive -RemotePath 's3:bucket/backups/md5-mismatch.7z' } |
+                Should -Throw '*MD5 mismatch*'
+        }
+        finally { $env:DBBACKUP_FAKE_RCLONE_REMOTE_MD5 = $null }
+    }
+
+    It 'reports size-only verification when the backend has no MD5' {
+        $archive = Join-Path $script:TestRoot 'no-hash.7z'
+        Set-Content -LiteralPath $archive -Value 'archive'
+        $env:DBBACKUP_FAKE_RCLONE_NO_HASH = '1'
+        try {
+            (Send-DBBackupFile -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -LocalPath $archive -RemotePath 's3:bucket/backups/no-hash.7z').Verification |
+                Should -Be 'size-only'
+            { Send-DBBackupFile -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -LocalPath $archive -RemotePath 's3:bucket/backups/no-hash.7z' -ExpectedSize 999 -ExpectedMd5 'abc' } |
+                Should -Throw '*size mismatch*'
+        }
+        finally { $env:DBBACKUP_FAKE_RCLONE_NO_HASH = $null }
     }
 
     It 'fails when remote validation fails' {
@@ -222,7 +291,7 @@ Context 'Storage module' {
                 -RclonePath $script:Rclone `
                 -ConfigPath $script:RcloneConfig `
                 -LocalPath $archive `
-                -RemotePath 's3:bucket/backups/failed-check.7z' } | Should -Throw '*rclone check failed*'
+                -RemotePath 's3:bucket/backups/failed-check.7z' } | Should -Throw '*Remote verification failed*'
 
         $env:DBBACKUP_FAKE_RCLONE_CHECK_EXIT = $null
     }

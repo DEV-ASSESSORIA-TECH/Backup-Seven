@@ -64,8 +64,9 @@ duplicadas. São esperados ao menos um .db (principal e dbspaces adicionais) e u
 saída da ferramenta vai para o log sem a senha.
 
 S3 usa `Secrets/rclone.conf`; o destino tem forma `remote:bucket/prefix`.
-O fluxo usa copyto e check por arquivo, sem sync ou remoção remota e sem exigir
-listagem do bucket. Configurar um remote não comprova acesso ao bucket. Mantenha
+O fluxo usa copyto e, em seguida, `rclone lsjson --hash` da pasta datada para
+conferir tamanho e MD5 do objeto enviado (sem reler o arquivo local nem baixar o
+objeto), sem sync ou remoção remota e sem exigir listagem do bucket inteiro. Configurar um remote não comprova acesso ao bucket. Mantenha
 os remotes antigos enquanto houver pendências que os referenciem. O setup
 pergunta o provedor S3 do rclone (AWS, Wasabi, Minio...) e um endpoint opcional.
 `Storage.Destination` (padrão `s3`) é apenas o rótulo de destino nas métricas.
@@ -94,7 +95,11 @@ Execution = @{
 ```
 
 Fontes não podem incluir a instância ou seus diretórios operacionais. Links são
-rejeitados. Diretórios vivos não têm consistência de snapshot. Com
+rejeitados. Diretórios vivos não têm consistência de snapshot. A pasta é lida no
+lugar (sem cópia para Work) e vai para `content/` dentro do pacote; um arquivo
+alterado durante a execução pode diferir do hash do manifest. Depois que o 7z é
+testado, o conteúdo em claro de Work é apagado antes da criptografia. A retenção
+decide pelo state.json e pelo tamanho, sem recalcular o hash de cada pacote. Com
 `EstimatedDatabaseBytes = 0`, a estimativa do banco vem do último payload
 completo do trabalho (+25%); sem histórico, o MySQL consulta o tamanho em
 information_schema (+25%). O SQL Anywhere não tem sonda: na primeira execução
@@ -195,8 +200,9 @@ ignorado, sem interromper a retenção dos demais (código 4). Com
 logo após o envio confirmado e Completed guarda só state.json (tamanho e hash). Logs operacionais são sanitizados e enviados
 como texto separado. Retenção remota é responsabilidade do bucket.
 
-`rclone check` compara tamanho e o melhor hash comum; sem hash compatível, a
-conferência pode limitar-se ao tamanho. Nem esse check, nem o teste 7z, comprovam
+A conferência remota compara tamanho e MD5 informado pelo destino (S3 guarda o
+MD5 nos metadados do objeto); se o destino não informar MD5, fica só no tamanho
+e o log registra `remote verification: size-only` como aviso. Nem esse check, nem o teste 7z, comprovam
 recuperação do banco. SQL Anywhere não executa dbvalid/dbeng/dbsrv. Seu sucesso
 significa saída nativa normal, arquivos esperados não vazios, pacote testado,
 criptografia concluída e publicação confirmada. Recovery é externo ao projeto,

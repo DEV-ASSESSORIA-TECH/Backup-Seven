@@ -196,4 +196,62 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $log = Get-ChildItem "$script:Root/instance/Logs" -File | Sort-Object LastWriteTimeUtc | Select-Object -Last 1
         Get-Content $log.FullName -Raw | Should -Match 'No space estimate is available'
     }
+    It 'archives a directory job in place with the user manifest under content/' {
+        $source=Join-Path $script:Root 'documents'
+        $null=New-Item -ItemType Directory (Join-Path $source 'sub') -Force
+        Set-Content (Join-Path $source 'manifest.json') '{"user":true}'
+        Set-Content (Join-Path $source 'sub/file.txt') 'document'
+        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('Directories = @()', "Directories = @(@{Id='documents';SourcePath='$($source.Replace("'","''"))'})"))
+        Invoke-DBBackup -ConfigPath $script:Config -Job documents | Should -Be 0
+        $bundle = Get-ChildItem "$script:Root/instance/Completed/documents" -Directory
+        $s = Read-DBArtifact $bundle.FullName (Read-DBConfiguration $script:Config)
+        $text = Get-Content (Join-Path $bundle.FullName $s.FileName) -Raw
+        $text | Should -Match '(?m)^ENTRY:content/manifest\.json$'
+        $text | Should -Match '(?m)^ENTRY:content/sub/file\.txt$'
+        $text | Should -Match '(?m)^ENTRY:manifest\.json$'
+        $text | Should -Match '"Path":\s*"content/sub/file.txt"'
+        Get-Content (Join-Path $source 'sub/file.txt') -Raw | Should -Match 'document'
+        @(Get-ChildItem "$script:Root/instance/Runtime/Work").Count | Should -Be 0
+    }
+    It 'removes the plaintext payload before encryption starts' {
+        $script:PayloadSeenAtEncryption = $null
+        Mock Protect-DBArchive {
+            param($InputPath, $OutputPath)
+            $work = Split-Path -Parent $InputPath
+            $script:PayloadSeenAtEncryption = @(Get-ChildItem -LiteralPath $work -Recurse -File -Filter '*.sql').Count -gt 0
+            Copy-Item -LiteralPath $InputPath -Destination $OutputPath
+        } -ModuleName Artifacts
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        $script:PayloadSeenAtEncryption | Should -BeFalse
+    }
+    It 'decides retention from state without re-hashing retained payloads' {
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        $bundle = Get-ChildItem "$script:Root/instance/Completed/database" -Directory
+        $payload = Get-ChildItem $bundle.FullName -Filter '*.age'
+        $bytes = [IO.File]::ReadAllBytes($payload.FullName)
+        $bytes[0] = $bytes[0] -bxor 0xFF
+        [IO.File]::WriteAllBytes($payload.FullName, $bytes)
+        Mock Get-FileHash { throw 'retention must not hash payloads' } -ModuleName Artifacts -ParameterFilter { $LiteralPath -like '*.age' }
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+    }
+    It 'verifies uploads from the remote listing and records the MD5 digest' {
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        $calls = Get-Content $env:DBBACKUP_FAKE_INVOCATION_LOG -Raw
+        $calls | Should -Match '(?m)^lsjson\|'
+        $calls | Should -Not -Match '(?m)^check\|'
+        $bundle = Get-ChildItem "$script:Root/instance/Completed/database" -Directory
+        $s = Get-Content (Join-Path $bundle.FullName 'state.json') -Raw | ConvertFrom-Json
+        # MD5 only mirrors what S3 reports; integrity is the recorded SHA-256.
+        $s.Md5 | Should -Be ([Convert]::ToHexString([Security.Cryptography.MD5]::HashData([IO.File]::ReadAllBytes((Join-Path $bundle.FullName $s.FileName)))).ToLowerInvariant())
+        $log = Get-ChildItem "$script:Root/instance/Logs" -File | Sort-Object LastWriteTimeUtc | Select-Object -Last 1
+        Get-Content $log.FullName -Raw | Should -Match 'remote verification: size\+md5'
+    }
+    It 'keeps the bundle pending when the remote MD5 differs' {
+        $env:DBBACKUP_FAKE_RCLONE_REMOTE_MD5='00000000000000000000000000000000'
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 1
+        @(Get-ChildItem "$script:Root/instance/Runtime/Pending/database" -Directory).Count | Should -Be 1
+        $env:DBBACKUP_FAKE_RCLONE_REMOTE_MD5=$null
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        @(Get-ChildItem "$script:Root/instance/Completed/database" -Directory).Count | Should -Be 2
+    }
 }

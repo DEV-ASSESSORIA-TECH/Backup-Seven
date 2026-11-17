@@ -4,6 +4,17 @@ using System.Linq;
 
 internal static class FakeExternalTool
 {
+    private static string RemoteStore()
+    {
+        return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Environment.GetCommandLineArgs()[0])), "remote-store");
+    }
+
+    private static string StoredObject(string remotePath)
+    {
+        var safe = new string(remotePath.Select(character => char.IsLetterOrDigit(character) || character == '.' || character == '-' || character == '_' ? character : '_').ToArray());
+        return Path.Combine(RemoteStore(), safe);
+    }
+
     private static int ExitCode(string variableName)
     {
         var value = Environment.GetEnvironmentVariable(variableName);
@@ -44,24 +55,42 @@ internal static class FakeExternalTool
 
         if (args.Length > 0 && args[0] == "a")
         {
+            // "dir\*" adds the contents; "dir" adds the folder under its own
+            // name (as 7-Zip does); adding to an existing archive appends.
             var archivePath = args.Skip(1).First(argument => !argument.StartsWith("-"));
             var sourcePath = args.Last();
+            var contentsOnly = sourcePath.EndsWith("*");
             var sourceRoot = sourcePath.TrimEnd('*', Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string text;
             if (Directory.Exists(sourceRoot))
             {
+                var prefix = contentsOnly ? "" : Path.GetFileName(sourceRoot) + "/";
                 var entries = Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories)
-                    .Select(path => "ENTRY:" + path.Substring(sourceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Replace('\\', '/') + Environment.NewLine + File.ReadAllText(path));
-                File.WriteAllText(archivePath, string.Join(Environment.NewLine, entries));
+                    .Select(path => "ENTRY:" + prefix + path.Substring(sourceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Replace('\\', '/') + Environment.NewLine + File.ReadAllText(path));
+                text = string.Join(Environment.NewLine, entries);
             }
             else if (File.Exists(sourcePath))
             {
-                File.WriteAllText(archivePath, File.ReadAllText(sourcePath));
+                text = "ENTRY:" + Path.GetFileName(sourcePath) + Environment.NewLine + File.ReadAllText(sourcePath);
             }
             else
             {
-                File.WriteAllText(archivePath, "fake archive");
+                text = "fake archive";
             }
+            if (File.Exists(archivePath))
+            {
+                text = File.ReadAllText(archivePath) + Environment.NewLine + text;
+            }
+            File.WriteAllText(archivePath, text);
             return ExitCode("DBBACKUP_FAKE_7ZIP_CREATE_EXIT");
+        }
+
+        if (args.Length > 0 && args[0] == "rn")
+        {
+            var names = args.Skip(1).Where(argument => !argument.StartsWith("-")).ToArray();
+            var renamed = File.ReadAllText(names[0]).Replace("ENTRY:" + names[1] + "/", "ENTRY:" + names[2] + "/");
+            File.WriteAllText(names[0], renamed);
+            return ExitCode("DBBACKUP_FAKE_7ZIP_RENAME_EXIT");
         }
 
         if (args.Length > 0 && args[0] == "t")
@@ -77,27 +106,57 @@ internal static class FakeExternalTool
 
         if (args.Length > 0 && args[0] == "copyto")
         {
+            int copyExit;
+            var failMatch = Environment.GetEnvironmentVariable("DBBACKUP_FAKE_RCLONE_FAIL_MATCH");
             if (args.Length > 1 && args[1].EndsWith(".log", StringComparison.OrdinalIgnoreCase))
             {
-                return ExitCode("DBBACKUP_FAKE_RCLONE_LOG_COPY_EXIT");
+                copyExit = ExitCode("DBBACKUP_FAKE_RCLONE_LOG_COPY_EXIT");
             }
-
-            var failMatch = Environment.GetEnvironmentVariable("DBBACKUP_FAKE_RCLONE_FAIL_MATCH");
-            if (!string.IsNullOrWhiteSpace(failMatch) && args.Any(argument => argument.IndexOf(failMatch, StringComparison.OrdinalIgnoreCase) >= 0))
+            else if (!string.IsNullOrWhiteSpace(failMatch) && args.Any(argument => argument.IndexOf(failMatch, StringComparison.OrdinalIgnoreCase) >= 0))
             {
-                return 1;
+                copyExit = 1;
             }
-            return ExitCode("DBBACKUP_FAKE_RCLONE_COPY_EXIT");
+            else
+            {
+                copyExit = ExitCode("DBBACKUP_FAKE_RCLONE_COPY_EXIT");
+            }
+            if (copyExit == 0)
+            {
+                // Simulated bucket: lsjson reports what was really uploaded.
+                Directory.CreateDirectory(RemoteStore());
+                File.Copy(args[1], StoredObject(args[2]), true);
+            }
+            return copyExit;
         }
 
-        if (args.Length > 0 && args[0] == "check")
+        if (args.Length > 0 && args[0] == "lsjson")
         {
-            if (args.Any(argument => argument.EndsWith(".log", StringComparison.OrdinalIgnoreCase)))
+            var include = args[Array.IndexOf(args, "--include") + 1].TrimStart('/');
+            var listExit = ExitCode(include.EndsWith(".log", StringComparison.OrdinalIgnoreCase) ? "DBBACKUP_FAKE_RCLONE_LOG_CHECK_EXIT" : "DBBACKUP_FAKE_RCLONE_CHECK_EXIT");
+            if (listExit != 0)
             {
-                return ExitCode("DBBACKUP_FAKE_RCLONE_LOG_CHECK_EXIT");
+                return listExit;
             }
-
-            return ExitCode("DBBACKUP_FAKE_RCLONE_CHECK_EXIT");
+            var stored = StoredObject(args[1] + "/" + include);
+            if (!File.Exists(stored))
+            {
+                Console.WriteLine("[]");
+                return 0;
+            }
+            string md5;
+            using (var algorithm = System.Security.Cryptography.MD5.Create())
+            using (var stream = File.OpenRead(stored))
+            {
+                md5 = BitConverter.ToString(algorithm.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+            }
+            var forced = Environment.GetEnvironmentVariable("DBBACKUP_FAKE_RCLONE_REMOTE_MD5");
+            if (!string.IsNullOrWhiteSpace(forced))
+            {
+                md5 = forced;
+            }
+            var hashes = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DBBACKUP_FAKE_RCLONE_NO_HASH")) ? ",\"Hashes\":{\"md5\":\"" + md5 + "\"}" : "";
+            Console.WriteLine("[{\"Path\":\"" + include + "\",\"Name\":\"" + include + "\",\"Size\":" + new FileInfo(stored).Length + hashes + "}]");
+            return 0;
         }
 
         var executableName = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]);

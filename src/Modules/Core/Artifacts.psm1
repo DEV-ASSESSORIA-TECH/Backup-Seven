@@ -33,7 +33,12 @@ function Test-DBLocalPayloadRemoved {
 }
 
 function Read-DBArtifact {
-    param([string] $BundlePath, [Collections.IDictionary] $Configuration)
+    <#
+    -SkipPayloadHash checks ownership, names, payload presence and size only.
+    Used where the bytes are not about to be sent: retention decides by state,
+    and a bundle created moments ago in this run was already digested.
+    #>
+    param([string] $BundlePath, [Collections.IDictionary] $Configuration, [switch] $SkipPayloadHash)
     if ((Get-Item -LiteralPath $BundlePath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Artifact bundle cannot be a link.' }
     $statePath = Join-Path $BundlePath 'state.json'
     if ((Get-Item -LiteralPath $statePath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Artifact state cannot be a link.' }
@@ -51,18 +56,25 @@ function Read-DBArtifact {
         $payload = Join-Path $BundlePath $s.FileName
         $item = Get-Item -LiteralPath $payload -Force
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Artifact payload cannot be a link.' }
-        if ($item.Length -ne $s.SizeBytes -or (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash -cne $s.Sha256) { throw 'Encrypted artifact integrity mismatch.' }
+        if ($item.Length -ne $s.SizeBytes) { throw 'Encrypted artifact integrity mismatch.' }
+        if (-not $SkipPayloadHash -and (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash -cne $s.Sha256) { throw 'Encrypted artifact integrity mismatch.' }
     }
     $null = [DateTime]::Parse($s.RecoveryPointUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
     return $s
 }
 
 function Send-DBBundle {
-    param([Collections.IDictionary] $Configuration, $Runtime, [string] $BundlePath)
-    $s = Read-DBArtifact $BundlePath $Configuration
+    param([Collections.IDictionary] $Configuration, $Runtime, [string] $BundlePath, [switch] $JustCreated)
+    $s = Read-DBArtifact $BundlePath $Configuration -SkipPayloadHash:$JustCreated
     $destination = Join-Path (Join-Path $Runtime.Completed $s.Job) (Split-Path -Leaf $BundlePath)
     if (Test-Path -LiteralPath $destination) { throw 'Completed bundle already exists; refusing overwrite.' }
-    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath (Join-Path $BundlePath $s.FileName) -RemotePath $s.RemotePath -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
+    # Md5 is recorded at creation; bundles from earlier versions compute it here.
+    $md5Property = $s.PSObject.Properties['Md5']
+    $md5 = if ($null -ne $md5Property) { [string] $md5Property.Value } else { $null }
+    $sent = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath (Join-Path $BundlePath $s.FileName) `
+        -RemotePath $s.RemotePath -ExpectedSize ([long] $s.SizeBytes) -ExpectedMd5 $md5 -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
+    $level = if ($sent.Verification -eq 'size-only') { 'WARN' } else { 'INFO' }
+    Write-DBLog $Runtime.LogPath $s.Job "Uploaded $($s.RemotePath); remote verification: $($sent.Verification)." $level
     $s.Transport = 'CONFIRMED'
     Write-DBJson (Join-Path $BundlePath 'state.json') $s
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
@@ -87,11 +99,26 @@ function Publish-DBPackage {
     if (-not (Test-DBPathWithin $source $Runtime.Work)) { throw 'Provider payload is outside run work directory.' }
     $manifestPath = Join-Path $source 'manifest.json'
     if (Test-Path -LiteralPath $manifestPath) { throw 'Provider payload contains reserved manifest.json.' }
+    # A directory job archives its configured source in place under content/
+    # instead of staging a full copy in Work.
+    $contentPath = $null
+    $contentProperty = $Package.PSObject.Properties['ContentPath']
+    if ($null -ne $contentProperty -and -not [string]::IsNullOrEmpty([string] $contentProperty.Value)) {
+        $contentPath = [IO.Path]::GetFullPath([string] $contentProperty.Value)
+        if ($Job.Provider -ne 'Directory' -or $contentPath -ne $Job.SourcePath) { throw 'External package content must be the configured directory source.' }
+        if (Test-DBPathWithin $contentPath $Runtime.Work) { throw 'External package content cannot be inside Work.' }
+        if ((Get-Item -LiteralPath $contentPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Directory source cannot be a link.' }
+        if (@(Get-ChildItem -LiteralPath $source -Force).Count -gt 0) { throw 'A package with external content must have an empty metadata directory.' }
+    }
     $files = @()
-    foreach ($file in Get-ChildItem -LiteralPath $source -Recurse -Force -ErrorAction Stop) {
-        if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Payload contains a link.' }
-        if (-not $file.PSIsContainer) {
-            $files += @{ Path = [IO.Path]::GetRelativePath($source, $file.FullName).Replace('\','/'); SizeBytes = $file.Length; Sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
+    $roots = @(@{ Root = $source; Prefix = '' })
+    if ($null -ne $contentPath) { $roots += @{ Root = $contentPath; Prefix = 'content/' } }
+    foreach ($entry in $roots) {
+        foreach ($file in Get-ChildItem -LiteralPath $entry.Root -Recurse -Force -ErrorAction Stop) {
+            if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Payload contains a link.' }
+            if (-not $file.PSIsContainer) {
+                $files += @{ Path = $entry.Prefix + [IO.Path]::GetRelativePath($entry.Root, $file.FullName).Replace('\','/'); SizeBytes = $file.Length; Sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
+            }
         }
     }
     $versions = @{}
@@ -110,10 +137,26 @@ function Publish-DBPackage {
         Roles = @($Result.Packages.Role)
     }
     $payloadBytes = Get-DBDirectorySize $source
+    if ($null -ne $contentPath) { $payloadBytes += Get-DBDirectorySize $contentPath }
     Assert-DBFreeSpace -Path $Runtime.Work -RequiredBytes ([long] ([decimal] $payloadBytes * 1.05 + 1048576)) -ReserveBytes $Configuration.Execution.ReserveBytes
     $archive = Join-Path $Runtime.Work "$base.7z"
-    $null = New-DBArchive -SevenZipPath $Configuration.Tools.SevenZip -SourcePath $source -ArchivePath $archive -ContentsOnly `
-        -CompressionLevel $Configuration.Archive.CompressionLevel -CpuLimitPercent $Configuration.Archive.CpuLimitPercent -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
+    $archiveSettings = @{
+        SevenZipPath = $Configuration.Tools.SevenZip; ArchivePath = $archive; CompressionLevel = $Configuration.Archive.CompressionLevel
+        CpuLimitPercent = $Configuration.Archive.CpuLimitPercent; TimeoutSeconds = $Configuration.Execution.ToolTimeoutSeconds
+    }
+    if ($null -ne $contentPath) {
+        $null = New-DBArchiveWithContent @archiveSettings -MetadataPath $source -ContentPath $contentPath -ReserveBytes $Configuration.Execution.ReserveBytes
+    }
+    else {
+        $null = New-DBArchive @archiveSettings -SourcePath $source -ContentsOnly
+    }
+    # The tested archive holds everything: drop the plaintext payload before
+    # encrypting so the payload, the .7z and the .age never coexist on disk.
+    $sharedSource = @($Result.Packages | Where-Object {
+        $other = [IO.Path]::GetFullPath($_.SourcePath)
+        $other -ne $source -and ((Test-DBPathWithin $other $source) -or (Test-DBPathWithin $source $other))
+    })
+    if ($sharedSource.Count -eq 0) { Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction Stop }
     $bundle = Join-Path $Runtime.Staging $base
     Set-DBPrivateDirectory $bundle
     try {
@@ -124,17 +167,19 @@ function Publish-DBPackage {
         $payload = Join-Path $bundle $name
         Move-Item -LiteralPath $temp -Destination $payload -ErrorAction Stop
         $remote = '{0}/{1}/{2}/{3}/{4}' -f $Configuration.Storage.RemoteRoot.TrimEnd('/'), $Configuration.InstanceName, $Job.Id, $Result.StartedAtUtc.ToString('yyyy/MM/dd'), $name
+        # One read yields size, SHA-256 (local integrity) and MD5 (remote check).
+        $digest = Get-DBFileDigest -Path $payload
         Write-DBJson (Join-Path $bundle 'state.json') @{
             SchemaVersion = 1; Instance = $Configuration.InstanceName; Job = $Job.Id; RunId = $Runtime.RunId
             Role = $Package.Role; LocalStatus = $Result.Status; RecoveryPointUtc = $Result.StartedAtUtc.ToString('o')
-            FileName = $name; SizeBytes = (Get-Item -LiteralPath $payload).Length
-            Sha256 = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash; RemotePath = $remote; Transport = 'PENDING'
+            FileName = $name; SizeBytes = $digest.Length; Sha256 = $digest.Sha256; Md5 = $digest.Md5
+            RemotePath = $remote; Transport = 'PENDING'
         }
         $pendingParent = Join-Path $Runtime.Pending $Job.Id
         $null = New-Item -ItemType Directory -Path $pendingParent -Force
         $pending = Join-Path $pendingParent $base
         [IO.Directory]::Move($bundle, $pending)
-        Send-DBBundle -Configuration $Configuration -Runtime $Runtime -BundlePath $pending
+        Send-DBBundle -Configuration $Configuration -Runtime $Runtime -BundlePath $pending -JustCreated
     }
     finally {
         if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
@@ -170,7 +215,9 @@ function Remove-DBExpired {
         if (-not (Test-Path -LiteralPath $parent)) { continue }
         foreach ($bundle in @(Get-ChildItem -LiteralPath $parent -Directory)) {
             try {
-                $state = Read-DBArtifact $bundle.FullName $Configuration
+                # Deciding expiry needs state and ownership, not a full re-hash
+                # of every retained payload on every run.
+                $state = Read-DBArtifact $bundle.FullName $Configuration -SkipPayloadHash
                 if ($state.Job -cne $job.Id -or $state.Transport -cne 'CONFIRMED') { throw 'Completed state mismatch.' }
                 if (([DateTime] $state.RecoveryPointUtc).ToUniversalTime() -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.CompletedDays)) {
                     Remove-Item -LiteralPath $bundle.FullName -Recurse -Force -ErrorAction Stop

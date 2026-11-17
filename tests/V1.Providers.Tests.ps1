@@ -47,12 +47,13 @@ Describe 'MySQL provider outcomes' {
     }
 }
 Describe 'Generic directory job' {
-    It 'stages hidden files and keeps user manifests below content' {
+    It 'points the package at the source instead of copying it into Work' {
         $source=Join-Path $TestDrive 'source'
         $null=New-Item -ItemType Directory $source
         Set-Content (Join-Path $source 'manifest.json') '{"user":true}'
         $r=Invoke-DBDirectory @{} ([pscustomobject]@{Id='files';SourcePath=$source}) ([pscustomobject]@{Work=(Join-Path $TestDrive 'work')})
         $r.Status | Should -Be SUCCESS
-        Test-Path (Join-Path $r.Packages[0].SourcePath 'content/manifest.json') | Should -BeTrue
+        $r.Packages[0].ContentPath | Should -Be $source
+        @(Get-ChildItem -LiteralPath $r.Packages[0].SourcePath -Force).Count | Should -Be 0
     }
 }
