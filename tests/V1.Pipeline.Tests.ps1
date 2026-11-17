@@ -108,4 +108,92 @@ Describe 'Encrypted pipeline with simulated external tools' {
         @(Get-ChildItem "$script:Root/instance/Completed/documents" -Directory).Count | Should -Be 1
         @(Get-ChildItem "$script:Root/instance/Completed/database" -Directory).Count | Should -Be 1
     }
+    It 'removes plaintext left by an interrupted run but never Pending or unknown items' {
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        $runtime = "$script:Root/instance/Runtime"
+        $staleWork = Join-Path $runtime "Work/$('a' * 32)/_secrets"
+        $null = New-Item -ItemType Directory $staleWork -Force
+        Set-Content (Join-Path $staleWork 'backup.options') '-c "PWD=left-behind"'
+        $staleBundle = Join-Path $runtime 'Staging/DBBackup_20260101T000000Z_MySQL_database_stale_FULL'
+        $null = New-Item -ItemType Directory $staleBundle -Force
+        Set-Content (Join-Path $staleBundle 'payload.tmp') 'partial'
+        $unknown = Join-Path $runtime 'Work/operator-notes'
+        $null = New-Item -ItemType Directory $unknown
+        $pendingMarker = Join-Path $runtime 'Pending/keep-me'
+        $null = New-Item -ItemType Directory $pendingMarker -Force
+        Invoke-DBBackup -ConfigPath $script:Config -Job database | Should -Be 4
+        Test-Path (Join-Path $runtime "Work/$('a' * 32)") | Should -BeFalse
+        Test-Path $staleBundle | Should -BeFalse
+        Test-Path $unknown | Should -BeTrue
+        Test-Path $pendingMarker | Should -BeTrue
+        $log = Get-ChildItem "$script:Root/instance/Logs" -File | Sort-Object LastWriteTimeUtc | Select-Object -Last 1
+        Get-Content $log.FullName -Raw | Should -Match 'interrupted run'
+        Get-Content $log.FullName -Raw | Should -Not -Match 'left-behind'
+    }
+    It 'reports an auxiliary failure with exit four when only cleanup finds unknown items' {
+        $null = New-Item -ItemType Directory "$script:Root/instance/Runtime/Work/operator-notes" -Force
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 4
+        @(Get-ChildItem "$script:Root/instance/Completed/database" -Directory).Count | Should -Be 1
+    }
+    It 'fails jobs that would start after the run deadline and still cleans Work' {
+        Mock Assert-DBToolDeadline { throw [TimeoutException]::new('Run deadline exceeded (test).') } -ModuleName Runner
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 1
+        @(Get-ChildItem "$script:Root/instance/Runtime/Work").Count | Should -Be 0
+        Test-Path "$script:Root/instance/Completed/database" | Should -BeFalse
+    }
+    It 'continues retention past an unreadable bundle and reports exit four' {
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        $completed = "$script:Root/instance/Completed/database"
+        $bundle = Get-ChildItem $completed -Directory | Select-Object -First 1
+        $expired = Join-Path $completed 'DBBackup_expired_copy'
+        Copy-Item $bundle.FullName $expired -Recurse
+        $state = Get-Content (Join-Path $expired 'state.json') -Raw | ConvertFrom-Json
+        $state.RecoveryPointUtc = '2000-01-01T00:00:00.0000000Z'
+        $state | ConvertTo-Json | Set-Content (Join-Path $expired 'state.json')
+        $corrupt = Join-Path $completed 'DBBackup_corrupt'
+        $null = New-Item -ItemType Directory $corrupt
+        Set-Content (Join-Path $corrupt 'state.json') 'not json'
+        $oldLog = Join-Path "$script:Root/instance/Logs" "DBBackupLog_20000101T000000Z_$('b' * 32).log"
+        Set-Content $oldLog 'old'
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 4
+        Test-Path $expired | Should -BeFalse
+        Test-Path $oldLog | Should -BeFalse
+        Test-Path $corrupt | Should -BeTrue
+    }
+    It 'treats a failed log upload as an auxiliary failure, not a failed backup' {
+        $env:DBBACKUP_FAKE_RCLONE_LOG_COPY_EXIT='1'
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 4
+        @(Get-ChildItem "$script:Root/instance/Completed/database" -Directory).Count | Should -Be 1
+    }
+    It 'keeps degraded precedence over auxiliary failures' {
+        $env:DBBACKUP_FAKE_MYSQLDUMP_NORMAL_EXIT='2'
+        $env:DBBACKUP_FAKE_RCLONE_LOG_COPY_EXIT='1'
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 5
+    }
+    It 'drops the local encrypted copy after confirmed upload when configured' {
+        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('KeepLocalPayload = $true', 'KeepLocalPayload = $false'))
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        $bundle = Get-ChildItem "$script:Root/instance/Completed/database" -Directory
+        @(Get-ChildItem $bundle.FullName -Filter '*.age').Count | Should -Be 0
+        $s = Read-DBArtifact $bundle.FullName (Read-DBConfiguration $script:Config)
+        $s.LocalPayload | Should -Be 'REMOVED'
+        $s.Sha256 | Should -Not -BeNullOrEmpty
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+    }
+    It 'estimates database space from a probe first and from the last payload afterwards' {
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        Get-Content $env:DBBACKUP_FAKE_INVOCATION_LOG -Raw | Should -Match 'information_schema'
+        Test-Path "$script:Root/instance/Runtime/Capacity/database.json" | Should -BeTrue
+        Remove-Item $env:DBBACKUP_FAKE_INVOCATION_LOG
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        Get-Content $env:DBBACKUP_FAKE_INVOCATION_LOG -Raw | Should -Not -Match 'information_schema'
+        $log = Get-ChildItem "$script:Root/instance/Logs" -File | Sort-Object LastWriteTimeUtc | Select-Object -Last 1
+        Get-Content $log.FullName -Raw | Should -Match 'Space estimate: \d+ bytes \(last-payload\+25%\)'
+    }
+    It 'warns when no database space estimate is available' {
+        $env:DBBACKUP_FAKE_MYSQL_SIZE='not-a-number'
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        $log = Get-ChildItem "$script:Root/instance/Logs" -File | Sort-Object LastWriteTimeUtc | Select-Object -Last 1
+        Get-Content $log.FullName -Raw | Should -Match 'No space estimate is available'
+    }
 }

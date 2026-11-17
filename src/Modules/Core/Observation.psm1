@@ -12,7 +12,9 @@ function Get-DBApplicationVersion {
 function Publish-DBJobMonitoring {
     param([Collections.IDictionary] $Configuration, $Job, [ValidateSet('SUCCESS','FAILED','DEGRADED')][string] $Status,
         [double] $DurationSeconds, [string] $LogPath)
-    if (-not $Configuration.Monitoring.Enabled) { return }
+    # Returns $false when the producer could not observe the state or could not
+    # write the textfile, so the run reports an auxiliary failure (exit 4).
+    if (-not $Configuration.Monitoring.Enabled) { return $true }
     $m = $Configuration.Monitoring
     $collected = [DateTime]::UtcNow
     $success = [long] 0
@@ -41,8 +43,11 @@ function Publish-DBJobMonitoring {
                 if ($state.SchemaVersion -ne 1 -or $state.Instance -cne $Configuration.InstanceName -or $state.Job -cne $Job.Id) { throw 'Completed state ownership mismatch.' }
                 if ($state.LocalStatus -cne 'SUCCESS' -or $state.Transport -cne 'CONFIRMED' -or $state.Role -cne 'FULL') { continue }
                 if ([IO.Path]::GetFileName($state.FileName) -cne $state.FileName) { throw 'Invalid completed file name.' }
-                $payload = Get-Item -LiteralPath (Join-Path $bundle.FullName $state.FileName)
-                if ($payload.Length -ne $state.SizeBytes -or $payload.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Completed size or path mismatch.' }
+                $removedProperty = $state.PSObject.Properties['LocalPayload']
+                if ($null -eq $removedProperty -or $removedProperty.Value -cne 'REMOVED') {
+                    $payload = Get-Item -LiteralPath (Join-Path $bundle.FullName $state.FileName)
+                    if ($payload.Length -ne $state.SizeBytes -or $payload.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Completed size or path mismatch.' }
+                }
                 $timestamp = ([DateTimeOffset] ([datetime] $state.RecoveryPointUtc).ToUniversalTime()).ToUnixTimeSeconds()
                 if ($timestamp -gt $success) { $success = $timestamp; $size = [long] $state.SizeBytes; $due = $null }
             }
@@ -75,9 +80,10 @@ function Publish-DBJobMonitoring {
         $content = Format-DBBackupMetric -Service $m.Service -BackupId $m.BackupIds[$Job.Id] -CollectedAtUtc $collected -CollectionSucceeded $collectionOk `
             -AttemptFinishedAtUtc $collected -AttemptSucceeded ($Status -eq 'SUCCESS') -AttemptDegraded ($Status -eq 'DEGRADED') `
             -AttemptDurationSeconds $DurationSeconds -LastSuccessTimestamp $success -LastSuccessSizeBytes $size -ExpectedIntervalSeconds $interval -SuccessDueTimestamp $due `
-            -InfoLabels @{kind=$(if($Job.Provider -eq 'Directory'){'files'}else{'database'});producer='dbbackup';producer_version=(Get-DBApplicationVersion);site=$Configuration.InstanceName.ToLowerInvariant();criticality=$m.Criticality[$Job.Id];destination='s3'}
+            -InfoLabels @{kind=$(if($Job.Provider -eq 'Directory'){'files'}else{'database'});producer='dbbackup';producer_version=(Get-DBApplicationVersion);site=$Configuration.InstanceName.ToLowerInvariant();criticality=$m.Criticality[$Job.Id];destination=$Configuration.Storage.Destination}
         $null = Write-DBBackupMetric -Directory $m.TextfileDirectory -Service $m.Service -BackupId $m.BackupIds[$Job.Id] -Content $content
     }
-    catch { Write-DBLog $LogPath 'Monitoring/Write' $_.Exception.Message 'WARN' }
+    catch { Write-DBLog $LogPath 'Monitoring/Write' $_.Exception.Message 'WARN'; return $false }
+    return $collectionOk
 }
 Export-ModuleMember -Function Publish-DBJobMonitoring, Get-DBApplicationVersion

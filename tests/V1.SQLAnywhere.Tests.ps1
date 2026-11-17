@@ -38,7 +38,7 @@ Describe 'SQL Anywhere safe full-backup provider' {
             $Executable -eq 'dbbackup.exe' -and $Arguments.Count -eq 2 -and $Arguments[0].StartsWith('@') -and ($Arguments -join ' ') -notmatch 'test-secret| -[rxns]'
         }
         Should -Invoke Invoke-DBTool -ModuleName SQLAnywhere -Times 0 -Exactly -ParameterFilter { $Executable -match 'dbvalid|dbeng|dbsrv' }
-        @(Get-ChildItem (Join-Path $script:R.Work '_secrets') -File).Count | Should -Be 0
+        Test-Path (Join-Path $script:R.Work '_secrets') | Should -BeFalse
     }
     It 'rejects an empty database or transaction log file' {
         Mock Invoke-DBTool {
@@ -49,9 +49,29 @@ Describe 'SQL Anywhere safe full-backup provider' {
         } -ModuleName SQLAnywhere
         { Invoke-DBSqlAnywhere $script:C $script:J $script:R } | Should -Throw '*empty*'
     }
-    It 'fails on a native backup error and removes transient credentials' {
-        Mock Invoke-DBTool { [pscustomobject]@{ExitCode=3;StdOut='';StdErr='PWD=test-secret'} } -ModuleName SQLAnywhere
-        { Invoke-DBSqlAnywhere $script:C $script:J $script:R } | Should -Throw '*backup failed*'
-        @(Get-ChildItem (Join-Path $script:R.Work '_secrets') -File).Count | Should -Be 0
+    It 'fails on a native backup error with redacted diagnostics and removes transient credentials' {
+        Mock Invoke-DBTool { [pscustomobject]@{ExitCode=3;StdOut='Database server not found';StdErr='PWD=test-secret; echoed test-secret'} } -ModuleName SQLAnywhere
+        $message = $null
+        try { Invoke-DBSqlAnywhere $script:C $script:J $script:R } catch { $message = $_.Exception.Message }
+        $message | Should -BeLike '*backup failed*'
+        $message | Should -Match 'Database server not found'
+        $message | Should -Not -Match 'test-secret'
+        Test-Path (Join-Path $script:R.Work '_secrets') | Should -BeFalse
+    }
+    It 'accepts a local SERVER connection without HOST and requires one of them' {
+        Set-Content $script:Options '-c "UID=u;PWD=p;SERVER=demo_srv;DBN=demo"'
+        (Read-DBSqlConnection $script:Options).SERVER | Should -Be 'demo_srv'
+        Set-Content $script:Options '-c "UID=u;PWD=p;DBN=demo"'
+        { Read-DBSqlConnection $script:Options } | Should -Throw '*HOST or SERVER*'
+    }
+    It 'accepts databases with additional dbspace files' {
+        Mock Invoke-DBTool {
+            param($Arguments)
+            foreach ($name in @('demo.db','demo_space2.db','demo.log')) { Set-Content (Join-Path $Arguments[-1] $name) 'fake' }
+            [pscustomobject]@{ExitCode=0;StdOut='';StdErr=''}
+        } -ModuleName SQLAnywhere
+        $r = Invoke-DBSqlAnywhere $script:C $script:J $script:R
+        $r.Status | Should -Be SUCCESS
+        @($r.Metadata.DatabaseFiles).Count | Should -Be 2
     }
 }

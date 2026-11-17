@@ -26,6 +26,12 @@ function Write-DBJson {
     finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
 }
 
+function Test-DBLocalPayloadRemoved {
+    param($State)
+    $property = $State.PSObject.Properties['LocalPayload']
+    return ($null -ne $property -and $property.Value -ceq 'REMOVED')
+}
+
 function Read-DBArtifact {
     param([string] $BundlePath, [Collections.IDictionary] $Configuration)
     if ((Get-Item -LiteralPath $BundlePath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Artifact bundle cannot be a link.' }
@@ -36,10 +42,17 @@ function Read-DBArtifact {
     Assert-DBIdentifier $s.Job
     if ($s.FileName -notmatch '^DBBackup_[A-Za-z0-9_-]+\.7z\.age$' -or [IO.Path]::GetFileName($s.FileName) -cne $s.FileName) { throw 'Unsafe artifact file name.' }
     if ($s.RemotePath -notmatch '^[A-Za-z0-9_-]+:[^\r\n]+$' -or -not $s.RemotePath.EndsWith('/' + $s.FileName, [StringComparison]::Ordinal)) { throw 'Invalid recorded remote destination.' }
-    $payload = Join-Path $BundlePath $s.FileName
-    $item = Get-Item -LiteralPath $payload -Force
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Artifact payload cannot be a link.' }
-    if ($item.Length -ne $s.SizeBytes -or (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash -cne $s.Sha256) { throw 'Encrypted artifact integrity mismatch.' }
+    if (Test-DBLocalPayloadRemoved $s) {
+        # Retention.KeepLocalPayload = $false: only confirmed bundles may drop
+        # their local copy; the state keeps size/hash of the uploaded bytes.
+        if ($s.Transport -cne 'CONFIRMED') { throw 'Only confirmed artifacts can omit the local payload.' }
+    }
+    else {
+        $payload = Join-Path $BundlePath $s.FileName
+        $item = Get-Item -LiteralPath $payload -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Artifact payload cannot be a link.' }
+        if ($item.Length -ne $s.SizeBytes -or (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash -cne $s.Sha256) { throw 'Encrypted artifact integrity mismatch.' }
+    }
     $null = [DateTime]::Parse($s.RecoveryPointUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
     return $s
 }
@@ -56,6 +69,13 @@ function Send-DBBundle {
     # Configuration requires the same volume: never split payload and state
     # with a cross-volume copy/delete when confirming transport.
     [IO.Directory]::Move($BundlePath, $destination)
+    if (-not $Configuration.Retention.KeepLocalPayload) {
+        # State first: a crash after it leaves a harmless extra file, never a
+        # bundle whose state claims a payload that is gone.
+        $s | Add-Member -NotePropertyName LocalPayload -NotePropertyValue 'REMOVED' -Force
+        Write-DBJson (Join-Path $destination 'state.json') $s
+        Remove-Item -LiteralPath (Join-Path $destination $s.FileName) -Force -ErrorAction Stop
+    }
 }
 
 function Publish-DBPackage {
@@ -139,29 +159,62 @@ function Invoke-DBPendingRetry {
 }
 
 function Remove-DBExpired {
+    <#
+    A bundle or log that cannot be read is reported and skipped; it never stops
+    retention of the remaining items. Any skipped item fails maintenance.
+    #>
     param([Collections.IDictionary] $Configuration, $Runtime)
+    $problems = 0
     foreach ($job in $Configuration.Jobs) {
         $parent = Join-Path $Runtime.Completed $job.Id
         if (-not (Test-Path -LiteralPath $parent)) { continue }
-        foreach ($bundle in Get-ChildItem -LiteralPath $parent -Directory) {
-            $state = Read-DBArtifact $bundle.FullName $Configuration
-            if ($state.Job -cne $job.Id -or $state.Transport -cne 'CONFIRMED') { throw 'Completed state mismatch.' }
-            if (([DateTime] $state.RecoveryPointUtc).ToUniversalTime() -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.CompletedDays)) {
-                Remove-Item -LiteralPath $bundle.FullName -Recurse -Force -ErrorAction Stop
+        foreach ($bundle in @(Get-ChildItem -LiteralPath $parent -Directory)) {
+            try {
+                $state = Read-DBArtifact $bundle.FullName $Configuration
+                if ($state.Job -cne $job.Id -or $state.Transport -cne 'CONFIRMED') { throw 'Completed state mismatch.' }
+                if (([DateTime] $state.RecoveryPointUtc).ToUniversalTime() -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.CompletedDays)) {
+                    Remove-Item -LiteralPath $bundle.FullName -Recurse -Force -ErrorAction Stop
+                }
+            }
+            catch {
+                $problems++
+                Write-DBLog $Runtime.LogPath 'Retention' "Skipped completed bundle $($bundle.FullName): $($_.Exception.Message)" 'ERROR'
             }
         }
     }
-    foreach ($log in Get-ChildItem -LiteralPath $Configuration.Paths.LogRoot -File -Filter 'DBBackupLog_*.log') {
+    foreach ($log in @(Get-ChildItem -LiteralPath $Configuration.Paths.LogRoot -File -Filter 'DBBackupLog_*.log')) {
         if ($log.FullName -eq $Runtime.LogPath -or $log.Name -notmatch '^DBBackupLog_(\d{8}T\d{6}Z)_[a-f0-9]{32}\.log$') { continue }
-        $date = [DateTime]::ParseExact($Matches[1], 'yyyyMMddTHHmmssZ', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
-        if ($date -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.LogDays)) { Remove-Item -LiteralPath $log.FullName -Force -ErrorAction Stop }
+        try {
+            $date = [DateTime]::ParseExact($Matches[1], 'yyyyMMddTHHmmssZ', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
+            if ($date -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.LogDays)) { Remove-Item -LiteralPath $log.FullName -Force -ErrorAction Stop }
+        }
+        catch {
+            $problems++
+            Write-DBLog $Runtime.LogPath 'Retention' "Skipped log $($log.FullName): $($_.Exception.Message)" 'ERROR'
+        }
     }
+    if ($problems -gt 0) { throw "Retention skipped $problems item(s); the remaining items were processed." }
+}
+
+function Get-DBPendingSummary {
+    <# Count and bytes of encrypted bundles still waiting for upload for one job. #>
+    param($Runtime, [string] $Job)
+    $parent = Join-Path $Runtime.Pending $Job
+    $count = 0
+    [long] $bytes = 0
+    if (Test-Path -LiteralPath $parent) {
+        foreach ($bundle in @(Get-ChildItem -LiteralPath $parent -Directory)) {
+            $count++
+            foreach ($file in @(Get-ChildItem -LiteralPath $bundle.FullName -File -Filter '*.age')) { $bytes += $file.Length }
+        }
+    }
+    [pscustomobject]@{ Count = $count; Bytes = $bytes }
 }
 
 function Publish-DBLog {
-    param([Collections.IDictionary] $Configuration, $Runtime)
+    param([Collections.IDictionary] $Configuration, $Runtime, [double] $TimeoutSeconds = 900)
     $remote = '{0}/{1}/Logs/{2}/{3}' -f $Configuration.Storage.RemoteRoot.TrimEnd('/'), $Configuration.InstanceName, [DateTime]::UtcNow.ToString('yyyy/MM/dd'), [IO.Path]::GetFileName($Runtime.LogPath)
-    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath $Runtime.LogPath -RemotePath $remote -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
+    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath $Runtime.LogPath -RemotePath $remote -TimeoutSeconds $TimeoutSeconds
 }
 
-Export-ModuleMember -Function Assert-DBBackupDependency, Publish-DBPackage, Invoke-DBPendingRetry, Remove-DBExpired, Publish-DBLog, Read-DBArtifact
+Export-ModuleMember -Function Assert-DBBackupDependency, Publish-DBPackage, Invoke-DBPendingRetry, Remove-DBExpired, Get-DBPendingSummary, Publish-DBLog, Read-DBArtifact, Test-DBLocalPayloadRemoved

@@ -157,7 +157,8 @@ function Get-DBTaskDefinition {
         [Parameter(Mandatory)][string] $PwshPath,
         [Parameter(Mandatory)][string] $ScriptPath,
         [Parameter(Mandatory)][string] $WorkingDirectory,
-        [Parameter(Mandatory)][string] $ConfigPath
+        [Parameter(Mandatory)][string] $ConfigPath,
+        [ValidateRange(1, 72)][int] $ExecutionLimitHours = 12
     )
 
     $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -ConfigPath `"$ConfigPath`" -Job $($Task.Job)"
@@ -195,7 +196,7 @@ function Get-DBTaskDefinition {
     <StartWhenAvailable>true</StartWhenAvailable>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>$enabled</Enabled>
-    <ExecutionTimeLimit>PT12H</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT$($ExecutionLimitHours)H</ExecutionTimeLimit>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -232,12 +233,27 @@ $body
     }
 }
 
+function Get-DBTaskExecutionLimit {
+    <#
+    Scheduler hard stop: the run deadline (Execution.RunTimeoutSeconds) rounded
+    up to whole hours plus one hour, so DBBackup reaches its own deadline first,
+    publishes the failure, uploads its log and removes plaintext Work.
+    #>
+    param([Collections.IDictionary] $Configuration)
+    $seconds = 39600
+    if ($Configuration.Contains('Execution') -and $Configuration.Execution -is [Collections.IDictionary] -and $Configuration.Execution.Contains('RunTimeoutSeconds')) {
+        $seconds = [long] $Configuration.Execution.RunTimeoutSeconds
+    }
+    return [int] ([Math]::Ceiling($seconds / 3600.0) + 1)
+}
+
 function Get-DBSchedulePlan {
     param([Collections.IDictionary] $Configuration, [AllowEmptyCollection()][object[]] $Existing,
         [string] $PwshPath, [string] $ScriptPath, [string] $WorkingDirectory)
     if (-not $Configuration.Contains('Schedule')) { return @() }
     $tasks = @(Get-DBScheduleTask $Configuration)
     $owner = Get-DBTaskOwner $Configuration.ConfigPath
+    $limitHours = Get-DBTaskExecutionLimit $Configuration
     $plan = @()
     foreach ($old in $Existing) {
         [xml] $xml = $old.Xml
@@ -246,7 +262,7 @@ function Get-DBSchedulePlan {
         }
     }
     foreach ($task in $tasks) {
-        $definition = Get-DBTaskDefinition -Task $task -PwshPath $PwshPath -ScriptPath $ScriptPath -WorkingDirectory $WorkingDirectory -ConfigPath $Configuration.ConfigPath
+        $definition = Get-DBTaskDefinition -Task $task -PwshPath $PwshPath -ScriptPath $ScriptPath -WorkingDirectory $WorkingDirectory -ConfigPath $Configuration.ConfigPath -ExecutionLimitHours $limitHours
         $old = @($Existing | Where-Object Name -EQ $task.Name)
         $action = 'Create'
         if ($old.Count -gt 0) {
@@ -333,4 +349,4 @@ function Invoke-DBSchedulePlan {
     }
 }
 
-Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun
+Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun, Get-DBTaskExecutionLimit

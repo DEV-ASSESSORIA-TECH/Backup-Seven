@@ -13,13 +13,18 @@ function Read-DBSqlConnection {
     catch { throw 'SQL connection string could not be parsed.' }
     $values = @{}
     foreach ($key in $builder.Keys) {
-        if ($key.ToUpperInvariant() -notin @('UID','PWD','HOST','DBN','SERVER','CHARSET')) { throw "Unsupported SQL connection parameter: $key" }
+        if ($key.ToUpperInvariant() -notin @('UID','PWD','HOST','DBN','SERVER','ENG','CHARSET')) { throw "Unsupported SQL connection parameter: $key" }
         $value = [string] $builder[$key]
         if ($value -match '["\r\n]') { throw 'SQL connection values cannot contain double quotes or newlines.' }
         $values[$key.ToUpperInvariant()] = $value
     }
-    foreach ($key in @('UID','PWD','HOST','DBN')) {
+    foreach ($key in @('UID','PWD','DBN')) {
         if (-not $values.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($values[$key])) { throw "SQL connection parameter is required: $key" }
+    }
+    # HOST for TCP/IP; SERVER (or its alias ENG) alone for a local server
+    # reached through shared memory.
+    if (-not @('HOST','SERVER','ENG' | Where-Object { $values.ContainsKey($_) -and -not [string]::IsNullOrWhiteSpace($values[$_]) }).Count) {
+        throw 'SQL connection requires HOST or SERVER (ENG).'
     }
     return $values
 }
@@ -39,6 +44,16 @@ function Write-DBSqlOption {
     [IO.File]::WriteAllText($Path, "-c $quoted", [Text.UTF8Encoding]::new($false))
 }
 
+function ConvertTo-DBSafeToolOutput {
+    <# Native output for diagnostics: the password is removed literally and by pattern, then truncated. #>
+    param([AllowNull()][string] $Text, [AllowNull()][string] $Secret, [int] $MaxLength = 2000)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    if (-not [string]::IsNullOrEmpty($Secret)) { $Text = $Text.Replace($Secret, '[REDACTED]') }
+    $Text = (Protect-DBMessage $Text).Trim()
+    if ($Text.Length -gt $MaxLength) { $Text = $Text.Substring(0, $MaxLength) + '...' }
+    return $Text
+}
+
 function Invoke-DBSqlAnywhere {
     param([Collections.IDictionary] $Configuration, $Job, $Runtime)
     $started = [DateTime]::UtcNow
@@ -55,10 +70,14 @@ function Invoke-DBSqlAnywhere {
         # Default dbbackup copies ALL files; do not add -r, -x, -xo, -n, -s.
         $timeout = if ($Configuration.Contains('Execution')) { $Configuration.Execution.ToolTimeoutSeconds } else { 21600 }
         $backup = Invoke-DBTool -Executable $Configuration.Tools.DbBackup -Arguments @("@$backupOptions", $root) -TimeoutSeconds $timeout
-        if ($backup.ExitCode -ne 0) { throw "SQL Anywhere backup failed (exit $($backup.ExitCode)); tool output omitted to protect credentials." }
+        if ($backup.ExitCode -ne 0) {
+            $detail = ConvertTo-DBSafeToolOutput -Text ("$($backup.StdOut) $($backup.StdErr)") -Secret $connection.PWD
+            throw "SQL Anywhere backup failed (exit $($backup.ExitCode)). $detail".Trim()
+        }
+        # The main database plus any dbspaces are .db files; at least one log.
         $dbs = @(Get-ChildItem -LiteralPath $root -File -Filter '*.db')
         $logs = @(Get-ChildItem -LiteralPath $root -File -Filter '*.log')
-        if ($dbs.Count -ne 1 -or $logs.Count -lt 1) { throw 'Expected one main .db and at least one transaction .log in the copied backup.' }
+        if ($dbs.Count -lt 1 -or $logs.Count -lt 1) { throw 'Expected at least one .db and one transaction .log in the copied backup.' }
         foreach ($file in @($dbs) + @($logs)) {
             if ($file.Length -eq 0) { throw 'SQL Anywhere produced an empty database or log file.' }
         }
@@ -69,11 +88,14 @@ function Invoke-DBSqlAnywhere {
                 Strategy = 'native-full-database-and-log'; Database = $Configuration.Database.Name
                 Validation = 'native-exit-code-and-nonempty-files'; RecoveryValidation = 'external-not-performed'
                 ProductionLogRename = $false; ProductionLogTruncate = $false
+                DatabaseFiles = @($dbs.Name); LogFiles = @($logs.Name)
             }
         }
     }
     finally {
-        foreach ($file in @($backupOptions)) { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop } }
+        # Removes the credential file and its private directory; a run killed
+        # before this point is cleaned by the next run (Clear-DBStaleRuntime).
+        if (Test-Path -LiteralPath $secretRoot) { Remove-Item -LiteralPath $secretRoot -Recurse -Force -ErrorAction Stop }
     }
 }
 Export-ModuleMember -Function Read-DBSqlConnection, Invoke-DBSqlAnywhere

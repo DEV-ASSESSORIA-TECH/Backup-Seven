@@ -103,6 +103,12 @@ internal static class FakeExternalTool
         var executableName = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]);
         if (string.Equals(executableName, "mysql", StringComparison.OrdinalIgnoreCase))
         {
+            if (args.Any(argument => argument.IndexOf("information_schema", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                var size = Environment.GetEnvironmentVariable("DBBACKUP_FAKE_MYSQL_SIZE");
+                Console.WriteLine(string.IsNullOrWhiteSpace(size) ? "12345" : size);
+                return ExitCode("DBBACKUP_FAKE_MYSQL_EXIT");
+            }
             var rows = Environment.GetEnvironmentVariable("DBBACKUP_FAKE_MYSQL_OBJECTS");
             if (string.IsNullOrWhiteSpace(rows))
             {

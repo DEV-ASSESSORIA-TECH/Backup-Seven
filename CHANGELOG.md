@@ -27,6 +27,10 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
   sucesso, deadline por agenda e identificação de publicação degradada.
 - Timeout por ferramenta com encerramento da árvore, streaming do dump e
   verificações de espaço/reserva antes das etapas maiores.
+- Prazo total por execução (`Execution.RunTimeoutSeconds`), com limite da tarefa
+  agendada derivado dele, e limpeza de Work/Staging de execuções interrompidas.
+- Estimativa automática de espaço (histórico do trabalho ou sonda MySQL),
+  `Retention.KeepLocalPayload`, `Storage.Destination` e resumo de pendências.
 - Pacote DBBackup com lista explícita, manifest interno, SHA-256 e workflow
   manual de release que verifica o commit antes de publicar.
 

@@ -31,6 +31,19 @@ Describe 'Bounded native tools and disk checks' {
             }
         }
     }
+    It 'refuses to start a tool after the run deadline and shortens tools to it' {
+        $c = Read-DBConfiguration $script:FixtureConfig
+        try {
+            Set-DBToolDeadline ([DateTime]::UtcNow.AddSeconds(-1))
+            { Invoke-DBTool -Executable $c.Tools.Age -Arguments @('--sleep','10') -TimeoutSeconds 60 } | Should -Throw '*deadline*'
+            Set-DBToolDeadline ([DateTime]::UtcNow.AddSeconds(1))
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            { Invoke-DBTool -Executable $c.Tools.Age -Arguments @('--sleep','20000') -TimeoutSeconds 60 } | Should -Throw '*run deadline*'
+            $watch.Elapsed.TotalSeconds | Should -BeLessThan 15
+        }
+        finally { Set-DBToolDeadline $null }
+        (Invoke-DBTool -Executable $c.Tools.Age -Arguments @('--sleep','10') -TimeoutSeconds 60).ExitCode | Should -Be 0
+    }
     It 'reserves free space before accepting a stage estimate' {
         Mock Get-DBAvailableSpace { 1000 } -ModuleName Capacity
         { Assert-DBFreeSpace -Path $TestDrive -RequiredBytes 800 -ReserveBytes 300 } | Should -Throw '*Insufficient*'
@@ -97,9 +110,10 @@ Describe 'Monitoring operational integration' {
         }
         finally { Close-DBRuntime $runtime }
     }
-    It 'does not create the Alloy directory or fail backup when monitoring is unavailable' {
+    It 'does not create the Alloy directory and reports unavailable monitoring as an auxiliary failure' {
         Remove-Item -LiteralPath $script:Textfile
-        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 4
+        @(Get-ChildItem (Join-Path (Split-Path $script:Config) 'Completed/database') -Directory).Count | Should -Be 1
         Test-Path $script:Textfile | Should -BeFalse
         Test-Path (Join-Path (Split-Path $script:Config) 'Runtime/Monitoring/database.json') | Should -BeTrue
     }

@@ -17,7 +17,10 @@ restauração no servidor. O DBBackup não instala essas dependências.
 ```
 
 Também há `Setup.bat` e `Aplicar-Configuracao.bat`, que solicitam elevação e
-perguntam a instância/configuração interativamente. O ZIP não contém configurações
+perguntam a instância/configuração interativamente. Eles usam
+`%ProgramFiles%\PowerShell\7\pwsh.exe` e, se não existir, o `pwsh.exe` do PATH.
+Prefira o instalador MSI: o PowerShell da Microsoft Store fica em caminho
+versionado que a tarefa (SYSTEM) pode não executar, e o setup avisa nesse caso. O ZIP não contém configurações
 operacionais: apenas os modelos `Templates/<provedor>/config.example.psd1`.
 
 ```text
@@ -52,18 +55,25 @@ SQL Anywhere usa `Secrets/sqlanywhere.options`, uma linha (substitua os valores)
 ```
 
 UID, PWD, HOST e DBN são obrigatórios; DBN corresponde a Database.Name. SERVER e
-CHARSET são opcionais. DSN, parâmetros de startup e flags de truncagem/rotação
-não são aceitos nesse arquivo. Valores não podem conter aspas duplas ou quebras
-de linha; aspas simples internas são duplicadas. É esperado um .db principal e
-pelo menos um .log não vazio. A rotina não abre a cópia do banco.
+CHARSET são opcionais. Para servidor local por memória compartilhada, SERVER
+(ou ENG) pode substituir HOST; um dos dois é obrigatório. DSN, parâmetros de
+startup e flags de truncagem/rotação não são aceitos nesse arquivo. Valores não
+podem conter aspas duplas ou quebras de linha; aspas simples internas são
+duplicadas. São esperados ao menos um .db (principal e dbspaces adicionais) e um
+.log não vazios. A rotina não abre a cópia do banco. Em falha do dbbackup, a
+saída da ferramenta vai para o log sem a senha.
 
 S3 usa `Secrets/rclone.conf`; o destino tem forma `remote:bucket/prefix`.
 O fluxo usa copyto e check por arquivo, sem sync ou remoção remota e sem exigir
 listagem do bucket. Configurar um remote não comprova acesso ao bucket. Mantenha
-os remotes antigos enquanto houver pendências que os referenciem.
+os remotes antigos enquanto houver pendências que os referenciem. O setup
+pergunta o provedor S3 do rclone (AWS, Wasabi, Minio...) e um endpoint opcional.
+`Storage.Destination` (padrão `s3`) é apenas o rótulo de destino nas métricas.
+Configure a expiração remota com regras de ciclo de vida do bucket.
 
 `Secrets/recipients.txt` contém um destinatário age público nativo por linha;
-comentários iniciados por # são aceitos. Identidades privadas ficam no cofre ou
+comentários iniciados por # são aceitos. O setup valida os destinatários antes
+de gravar o arquivo e pede novamente (até três tentativas). Identidades privadas ficam no cofre ou
 no processo externo de recuperação. Alterar destinatários afeta somente novos
 pacotes; guarde as identidades necessárias aos antigos. O projeto não cria nem
 usa chaves de ensaio/recuperação no servidor.
@@ -77,22 +87,30 @@ são opcionais e independentes:
 Directories = @(@{ Id='documents'; SourcePath='D:\Documents' })
 Execution = @{
     ToolTimeoutSeconds = 21600
+    RunTimeoutSeconds = 39600
     ReserveBytes = 1073741824
     EstimatedDatabaseBytes = 0
 }
 ```
 
 Fontes não podem incluir a instância ou seus diretórios operacionais. Links são
-rejeitados. Diretórios vivos não têm consistência de snapshot. Configure a
-estimativa do banco conforme seu tamanho esperado: zero verifica só a reserva,
-pois o produtor não consulta o tamanho remoto. Antes do 7z e do age, usa-se o
+rejeitados. Diretórios vivos não têm consistência de snapshot. Com
+`EstimatedDatabaseBytes = 0`, a estimativa do banco vem do último payload
+completo do trabalho (+25%); sem histórico, o MySQL consulta o tamanho em
+information_schema (+25%). O SQL Anywhere não tem sonda: na primeira execução
+só a reserva é verificada e o log registra um aviso; informe um valor para
+evitar isso. Antes do 7z e do age, usa-se o
 tamanho já conhecido, margem de 5%, 1 MiB e reserva. Não há reserva exclusiva de
 disco; outros processos e crescimento dos dados podem consumir o espaço.
 
 Cada processo externo tem timeout próprio (padrão 6 horas); expiração encerra sua
-árvore. A tarefa agendada tem limite total independente de 12 horas. Esses
-limites não tornam um backup interrompido válido; a próxima execução tenta as
-pendências já completas, não arquivos parciais de Work.
+árvore. `RunTimeoutSeconds` (padrão 11 horas) é o prazo da execução inteira:
+cada ferramenta é encurtada ao tempo restante e nenhum trabalho começa depois
+dele, de modo que a falha é registrada nas métricas e Work é limpo. A tarefa
+agendada recebe esse prazo arredondado para horas mais uma hora (12 horas no
+padrão); reaplique a configuração depois de alterá-lo. Esses limites não tornam
+um backup interrompido válido; a próxima execução tenta as pendências já
+completas, não arquivos parciais de Work.
 
 ```powershell
 Monitoring = @{
@@ -115,7 +133,8 @@ Arquivos `<service>__<backup_id>.prom` seguem o contrato genérico Grafana. Últ
 sucesso considera somente FULL normal confirmado, no ponto de recuperação
 original. Pacotes degradados não avançam sucesso. O checkpoint privado em
 Runtime/Monitoring conserva esse histórico após retenção ou falta da pasta Alloy.
-Falha de métricas apenas avisa no log. Não apague checkpoints durante atualização.
+Falha ao observar ou gravar métricas vai para o log e resulta em código 4 quando
+nenhum trabalho falhou. Não apague checkpoints durante atualização.
 
 ## Diagnosticar, planejar e aplicar agenda
 
@@ -126,8 +145,8 @@ Falha de métricas apenas avisa no log. Não apague checkpoints durante atualiza
 ```
 
 Use `-InstancesRoot` consistentemente se as configurações estiverem fora da raiz
-padrão. Diagnose é local: configuração, ACL, arquivos, ferramentas, espaço e
-remotes declarados. Não conecta ao banco, não testa recuperação e não grava.
+padrão. Diagnose é local: configuração, ACL de secrets e das pastas de estado,
+arquivos, ferramentas, espaço e remotes declarados. Não conecta ao banco, não testa recuperação e não grava.
 Plan também não cria diretórios, altera ACL ou aplica tarefas.
 
 ```powershell
@@ -155,13 +174,25 @@ e aposente seu arquivo .prom deliberadamente.
 Cada instância tem um lock; outras podem rodar simultaneamente. A falha de um
 trabalho não impede os demais. O banco/log, dump e 7z ficam sem criptografia em
 Work durante a execução, sob ACL privada. Em término normal, Work é limpo; após
-interrupção, inspecione Work/Staging com a instância parada. Apagar não equivale
-a apagamento seguro. Nunca limpe Pending automaticamente para liberar espaço.
+uma interrupção, a execução seguinte da instância remove, sob o lock, as pastas
+de execução de Work e de Staging deixadas para trás (inclusive o arquivo de
+conexão temporário do SQL Anywhere) e registra o que removeu. Itens com outros
+nomes não são tocados e geram código 4. Apagar não equivale a apagamento seguro.
+Nunca limpe Pending automaticamente para liberar espaço; cada execução registra
+quantos pacotes e bytes aguardam envio.
+
+As pastas Runtime, Completed e Logs recebem ACL privada (SYSTEM e
+Administradores) apenas quando o DBBackup as cria. Uma execução nunca altera as
+permissões de uma pasta existente. O Apply só protege uma pasta existente vazia
+e recusa uma pasta com conteúdo e permissões de terceiros; use pastas dedicadas.
 
 Pending guarda o pacote criptografado e state.json; reenvia os mesmos bytes ao
 destino registrado, mesmo que a configuração tenha mudado. Completed indica
 transporte confirmado e é sujeito à retenção local por idade; o registro pode
-continuar marcado DEGRADED/FAILED. Logs operacionais são sanitizados e enviados
+continuar marcado DEGRADED/FAILED. Um pacote ou log ilegível é registrado e
+ignorado, sem interromper a retenção dos demais (código 4). Com
+`Retention.KeepLocalPayload = $false`, a cópia criptografada local é apagada
+logo após o envio confirmado e Completed guarda só state.json (tamanho e hash). Logs operacionais são sanitizados e enviados
 como texto separado. Retenção remota é responsabilidade do bucket.
 
 `rclone check` compara tamanho e o melhor hash comum; sem hash compatível, a
@@ -177,8 +208,11 @@ sem hook, tarefa automática, chave privada ou instância local de teste.
 | 1 | Falha operacional, publicação, criptografia ou verificação. |
 | 2 | Configuração, dependência ou inicialização inválida. |
 | 3 | Lock ocupado; não publica tentativa falha nas métricas. |
-| 4 | Backup concluído, mas limpeza/retenção falhou. |
+| 4 | Backups publicados, mas uma etapa auxiliar falhou: retenção, limpeza de execução interrompida, envio do log ou métricas. |
 | 5 | Os dois pacotes do fallback MySQL foram publicados como degradados. |
+
+Precedência: 1 > 5 > 4 > 0. A etapa auxiliar que falhou continua registrada no
+log mesmo quando o código final é 5.
 
 ## Atualização e migração
 
@@ -199,8 +233,9 @@ migração ou atualização da produção é efetuada pelo build ou release.
 
 `./scripts/verify.ps1` executa parsing, PSScriptAnalyzer e Pester com ferramentas
 simuladas. `./scripts/package.ps1` gera ZIP, manifest de arquivos e SHA-256 em
-dist. O workflow manual Release repete os checks, recusa versões já publicadas e
-vincula a release ao commit verificado. Disparar o workflow é uma ação separada;
+dist. O workflow manual Release só aceita disparo a partir da `main`, repete os
+checks, recusa versões já publicadas e vincula a release ao commit verificado.
+As actions dos workflows são fixadas por SHA de commit. Disparar o workflow é uma ação separada;
 nenhuma publicação é realizada apenas por desenvolver esta branch.
 
 Os testes entregues não acessam bancos/S3 reais e não certificam compatibilidade

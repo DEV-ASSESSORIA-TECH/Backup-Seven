@@ -1,10 +1,12 @@
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'Process.psm1')
 
-function Read-DBRecipient {
-    param([string] $Path)
+function Get-DBRecipientList {
+    <# Validated, de-duplicated native age public recipients from text lines. #>
+    param([AllowEmptyCollection()][AllowNull()][string[]] $Lines)
     $recipients = @()
-    foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+    foreach ($line in @($Lines)) {
+        if ($null -eq $line) { continue }
         $line = $line.Trim()
         if (-not $line -or $line.StartsWith('#')) { continue }
         if ($line -cnotmatch '^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$') { throw 'Recipients file must contain native age public recipients only.' }
@@ -12,6 +14,11 @@ function Read-DBRecipient {
     }
     if ($recipients.Count -eq 0) { throw 'At least one age recipient is required.' }
     return @($recipients | Select-Object -Unique)
+}
+
+function Read-DBRecipient {
+    param([string] $Path)
+    return @(Get-DBRecipientList @(Get-Content -LiteralPath $Path -ErrorAction Stop))
 }
 
 function Protect-DBArchive {
@@ -32,4 +39,4 @@ function Protect-DBArchive {
         throw
     }
 }
-Export-ModuleMember -Function Read-DBRecipient, Protect-DBArchive
+Export-ModuleMember -Function Get-DBRecipientList, Read-DBRecipient, Protect-DBArchive

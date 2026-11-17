@@ -82,6 +82,10 @@ function Read-DBConfiguration {
         $value = 0
         if (-not [int]::TryParse([string] $c.Retention[$key], [ref] $value) -or $value -lt 1) { throw "Invalid Retention.$key" }
     }
+    if (-not $c.Retention.Contains('KeepLocalPayload')) { $c.Retention.KeepLocalPayload = $true }
+    if ($c.Retention.KeepLocalPayload -isnot [bool]) { throw 'Retention.KeepLocalPayload must be boolean.' }
+    if (-not $c.Storage.Contains('Destination')) { $c.Storage.Destination = 's3' }
+    if ([string] $c.Storage.Destination -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$') { throw 'Storage.Destination must be a lowercase identifier.' }
     $jobs = @([pscustomobject]@{ Id = 'database'; Provider = $c.Provider; SourcePath = $null })
     if (-not $c.Contains('Directories')) { $c.Directories = @() }
     $ids = @{ database = $true }
@@ -98,13 +102,19 @@ function Read-DBConfiguration {
     $c.Jobs = $jobs
     if (-not $c.Contains('Execution')) { $c.Execution = @{} }
     if ($c.Execution -isnot [Collections.IDictionary]) { throw 'Execution must be a hashtable.' }
-    $defaults = @{ToolTimeoutSeconds=21600;ReserveBytes=1073741824;EstimatedDatabaseBytes=0}
+    $defaults = @{ToolTimeoutSeconds=21600;RunTimeoutSeconds=39600;ReserveBytes=1073741824;EstimatedDatabaseBytes=0}
     foreach ($key in $defaults.Keys) {
         if (-not $c.Execution.Contains($key)) { $c.Execution[$key] = $defaults[$key] }
         [long] $number = 0
         if (-not [long]::TryParse([string] $c.Execution[$key], [ref] $number) -or $number -lt 0) { throw "Invalid Execution.$key" }
     }
-    if ($c.Execution.ToolTimeoutSeconds -notin 1..86400) { throw 'ToolTimeoutSeconds must be 1..86400.' }
+    $toolTimeout = [long] $c.Execution.ToolTimeoutSeconds
+    if ($toolTimeout -lt 1 -or $toolTimeout -gt 86400) { throw 'ToolTimeoutSeconds must be 1..86400.' }
+    # Whole run, every job included. The scheduled task limit is derived from it
+    # (rounded up to hours, plus one hour) so DBBackup stops first, records the
+    # failure and cleans up instead of being killed by the Task Scheduler.
+    $runTimeout = [long] $c.Execution.RunTimeoutSeconds
+    if ($runTimeout -lt 600 -or $runTimeout -gt 255600) { throw 'RunTimeoutSeconds must be 600..255600.' }
     if (-not $c.Contains('Monitoring')) { $c.Monitoring = @{Enabled=$false} }
     if ($c.Monitoring -isnot [Collections.IDictionary] -or -not $c.Monitoring.Contains('Enabled') -or $c.Monitoring.Enabled -isnot [bool]) { throw 'Monitoring.Enabled must be boolean.' }
     if ($c.Monitoring.Enabled) {

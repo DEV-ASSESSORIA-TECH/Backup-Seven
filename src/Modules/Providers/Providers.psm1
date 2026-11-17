@@ -9,11 +9,19 @@ function Invoke-DBProvider {
         Directory { return Invoke-DBDirectory -Configuration $Configuration -Job $Job -Runtime $Runtime }
         SQLAnywhere {
             $module = Join-Path $PSScriptRoot 'SQLAnywhere/SQLAnywhere.psm1'
-            if (-not (Test-Path -LiteralPath $module)) { throw 'SQL Anywhere provider is not included in this development snapshot.' }
             Import-Module $module
             return Invoke-DBSqlAnywhere -Configuration $Configuration -Job $Job -Runtime $Runtime
         }
         default { throw "Unknown provider: $($Job.Provider)" }
     }
 }
-Export-ModuleMember -Function Invoke-DBProvider
+
+function Get-DBProviderSizeEstimate {
+    <# Cheap provider-side size probe in bytes, or $null when the provider has none. #>
+    param([Collections.IDictionary] $Configuration, $Job)
+    switch ($Job.Provider) {
+        MySQL { return Get-DBMySqlSizeEstimate -Configuration $Configuration }
+        default { return $null }
+    }
+}
+Export-ModuleMember -Function Invoke-DBProvider, Get-DBProviderSizeEstimate

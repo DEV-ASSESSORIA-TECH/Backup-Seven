@@ -7,8 +7,11 @@ if errorlevel 1 (
     exit /b
 )
 set "PWSH=%ProgramFiles%\PowerShell\7\pwsh.exe"
-if not exist "%PWSH%" (
-    echo Instale PowerShell 7 antes de continuar.
+if not exist "%PWSH%" set "PWSH="
+rem Fallback: any pwsh.exe on PATH (other install locations or versions).
+if not defined PWSH for /f "delims=" %%P in ('where pwsh.exe 2^>nul') do if not defined PWSH set "PWSH=%%P"
+if not defined PWSH (
+    echo Instale PowerShell 7.2 ou superior antes de continuar.
     pause
     exit /b 1
 )

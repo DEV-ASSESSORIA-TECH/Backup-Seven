@@ -39,8 +39,13 @@ try {
         Set-DBInteractiveConfiguration $ConfigPath
         Initialize-DBSecret (Read-DBConfiguration $ConfigPath)
     }
+    $pwshPath = (Get-Process -Id $PID).Path
+    if ($pwshPath -match '\\WindowsApps\\') {
+        # Store/MSIX paths are versioned and may be unreadable by SYSTEM.
+        Write-Warning "PowerShell em $pwshPath foi instalado pela Microsoft Store; a tarefa agendada (SYSTEM) pode nao conseguir executa-lo. Prefira o instalador MSI do PowerShell 7."
+    }
     Invoke-DBConfigurationApply -Configuration (Read-DBConfiguration $ConfigPath) -InstancesRoot $InstancesRoot `
-        -ScriptPath (Join-Path $PSScriptRoot 'Backup.ps1') -PwshPath (Get-Process -Id $PID).Path -PlanOnly:$Plan
+        -ScriptPath (Join-Path $PSScriptRoot 'Backup.ps1') -PwshPath $pwshPath -PlanOnly:$Plan
     exit 0
 }
 catch { Write-Error (Protect-DBMessage $_.Exception.Message) -ErrorAction Continue; exit 2 }

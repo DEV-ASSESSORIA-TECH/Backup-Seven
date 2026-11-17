@@ -21,6 +21,10 @@ Describe 'DBBackup task identity and reconciliation' {
         $definition.Arguments | Should -Match '-ConfigPath "C:\\DBBackup\\Instances\\MySQL\\config.psd1" -Job database'
         $definition.Xml | Should -Match 'S-1-5-18'
         $definition.Xml | Should -Match 'PT12H'
+        Get-DBTaskExecutionLimit $script:C | Should -Be 12
+        $script:C.Execution=@{RunTimeoutSeconds=72000}
+        Get-DBTaskExecutionLimit $script:C | Should -Be 21
+        (Get-TestPlan $script:C)[0].Definition.Xml | Should -Match 'PT21H'
         $definition.Xml | Should -Not -Match 'Seven|Fiscal|-Mode'
         Get-DBTaskFolder 'SQLAnywhere' | Should -Be '\DBBackup\SQLAnywhere\'
     }
@@ -139,5 +143,45 @@ Describe 'Unified setup and secrets' {
         $after=@(Get-ChildItem (Split-Path $script:Config) -Recurse -File | Get-FileHash | ForEach-Object Hash)
         $after | Should -Be $before
         Should -Invoke Get-DBSchedulerSnapshot -ModuleName Setup -Times 0 -Exactly
+    }
+    It 'validates age recipients before writing and re-prompts on invalid input' {
+        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
+        $c=Read-DBConfiguration $script:Config
+        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Storage.ConfigPath)) {Set-Content $file 'preserve exactly'}
+        $script:Answers=[Collections.Generic.Queue[string]]::new([string[]]@('AGE-SECRET-KEY-1PRIVATE', ('age1'+('q'*58))))
+        Mock Read-Host { $script:Answers.Dequeue() } -ModuleName Setup
+        Mock Write-Warning {} -ModuleName Setup
+        Initialize-DBSecret $c
+        (Get-Content $c.Encryption.RecipientsFile -Raw).Trim() | Should -Be ('age1'+('q'*58))
+        Should -Invoke Write-Warning -ModuleName Setup -Times 1 -Exactly
+    }
+    It 'gives up after three invalid recipient answers without creating the file' {
+        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
+        $c=Read-DBConfiguration $script:Config
+        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Storage.ConfigPath)) {Set-Content $file 'preserve exactly'}
+        Mock Read-Host { '' } -ModuleName Setup
+        Mock Write-Warning {} -ModuleName Setup
+        { Initialize-DBSecret $c } | Should -Throw '*recipient*'
+        Test-Path $c.Encryption.RecipientsFile | Should -BeFalse
+    }
+    It 'writes the chosen S3 provider and optional endpoint to rclone' {
+        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
+        $c=Read-DBConfiguration $script:Config
+        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Encryption.RecipientsFile)) {Set-Content $file 'preserve exactly'}
+        Mock Read-Host {
+            param($Prompt, [switch] $AsSecureString)
+            if ($AsSecureString) { $secure=[Security.SecureString]::new(); foreach ($ch in 'secret-value'.ToCharArray()) { $secure.AppendChar($ch) }; return $secure }
+            switch -Wildcard ($Prompt) {
+                'Provedor*' { 'Wasabi' }
+                'Endpoint*' { 's3.wasabisys.com' }
+                'Access*' { 'AKIDTEST' }
+                default { '' }
+            }
+        } -ModuleName Setup
+        Initialize-DBSecret $c
+        $text=Get-Content $c.Storage.ConfigPath -Raw
+        $text | Should -Match '(?m)^provider = Wasabi$'
+        $text | Should -Match '(?m)^endpoint = s3\.wasabisys\.com$'
+        $text | Should -Match '(?m)^secret_access_key = secret-value$'
     }
 }

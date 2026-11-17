@@ -1,9 +1,37 @@
 Set-StrictMode -Version Latest
 
+# The run deadline is process-wide (not module-scoped) so every module that
+# imports this file observes the same limit, regardless of import order.
+$script:DeadlineKey = 'DBBackup.ToolDeadlineUtc'
+
+function Set-DBToolDeadline {
+    param([Nullable[DateTime]] $DeadlineUtc)
+    [AppDomain]::CurrentDomain.SetData($script:DeadlineKey, $(if ($null -ne $DeadlineUtc) { $DeadlineUtc.ToUniversalTime() } else { $null }))
+}
+
+function Get-DBToolDeadline {
+    $value = [AppDomain]::CurrentDomain.GetData($script:DeadlineKey)
+    if ($value -is [DateTime]) { return $value }
+    return $null
+}
+
+function Assert-DBToolDeadline {
+    $deadline = Get-DBToolDeadline
+    if ($null -ne $deadline -and [DateTime]::UtcNow -ge $deadline) {
+        throw [TimeoutException]::new('Run deadline exceeded (Execution.RunTimeoutSeconds); remaining work was not started.')
+    }
+}
+
 function Invoke-DBTool {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $Executable, [Parameter(Mandatory)][string[]] $Arguments,
         [ValidateRange(0.05,86400)][double] $TimeoutSeconds = 21600, [string] $OutputPath)
+    # Never let a single tool outlive the run deadline: the scheduler limit is
+    # set above it so the run can still record failure and clean up.
+    Assert-DBToolDeadline
+    $limit = $TimeoutSeconds
+    $deadline = Get-DBToolDeadline
+    if ($null -ne $deadline) { $limit = [Math]::Max(0.05, [Math]::Min($limit, ($deadline - [DateTime]::UtcNow).TotalSeconds)) }
     $si = [Diagnostics.ProcessStartInfo]::new()
     $si.FileName = $Executable
     $si.UseShellExecute = $false
@@ -27,10 +55,11 @@ function Invoke-DBTool {
         $watch = [Diagnostics.Stopwatch]::StartNew()
         while (-not $p.WaitForExit(100)) {
             if ($stdout.IsFaulted) { $null = $stdout.GetAwaiter().GetResult() }
-            if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            if ($watch.Elapsed.TotalSeconds -ge $limit) {
                 $p.Kill($true)
                 $null = $p.WaitForExit(10000)
-                throw [TimeoutException]::new("External tool exceeded its $TimeoutSeconds second timeout; process tree terminated.")
+                $reason = if ($limit -lt $TimeoutSeconds) { 'the run deadline' } else { "its $TimeoutSeconds second timeout" }
+                throw [TimeoutException]::new("External tool exceeded $reason; process tree terminated.")
             }
         }
         if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]] @($stdout,$stderr), 10000)) {
@@ -50,4 +79,4 @@ function Invoke-DBTool {
         $p.Dispose()
     }
 }
-Export-ModuleMember -Function Invoke-DBTool
+Export-ModuleMember -Function Invoke-DBTool, Set-DBToolDeadline, Get-DBToolDeadline, Assert-DBToolDeadline

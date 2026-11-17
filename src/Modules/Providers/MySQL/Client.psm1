@@ -129,6 +129,35 @@ function Get-MySqlDatabaseObject {
     return $objects
 }
 
+function Get-MySqlDatabaseSize {
+    <# Approximate data+index bytes of the database, used only as a disk estimate. #>
+    [CmdletBinding()]
+    [OutputType([long])]
+    param(
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $MySqlPath,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DefaultsExtraFile,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DatabaseName,
+        [double] $TimeoutSeconds = 300
+    )
+
+    $arguments = @(
+        "--defaults-extra-file=$DefaultsExtraFile"
+        '--batch'
+        '--raw'
+        '--skip-column-names'
+        "--database=$DatabaseName"
+        '--execute=SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = DATABASE()'
+    )
+    $result = Invoke-MySqlProcess -ExecutablePath $MySqlPath -Arguments $arguments -TimeoutSeconds $TimeoutSeconds
+    if ($result.ExitCode -ne 0) { throw "mysql size query failed with exit code $($result.ExitCode)." }
+    [long] $bytes = 0
+    $text = ([string] $result.StdOut).Trim()
+    if (-not [long]::TryParse($text, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref] $bytes) -or $bytes -lt 0) {
+        throw 'mysql size query returned an invalid value.'
+    }
+    return $bytes
+}
+
 function Get-MySqlSafeFileName {
     [CmdletBinding()]
     param(
@@ -155,4 +184,4 @@ function Get-MySqlSafeFileName {
     return $safeName
 }
 
-Export-ModuleMember -Function New-MySqlDatabaseDump, Invoke-MySqlDatabaseDump, Get-MySqlDatabaseObject, Get-MySqlSafeFileName
+Export-ModuleMember -Function New-MySqlDatabaseDump, Invoke-MySqlDatabaseDump, Get-MySqlDatabaseObject, Get-MySqlDatabaseSize, Get-MySqlSafeFileName

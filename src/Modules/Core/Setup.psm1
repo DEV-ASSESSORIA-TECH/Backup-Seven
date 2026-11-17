@@ -1,5 +1,5 @@
 Set-StrictMode -Version Latest
-foreach ($name in @('Configuration','Runtime','Artifacts','Schedule','Capacity')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
+foreach ($name in @('Configuration','Runtime','Artifacts','Schedule','Capacity','Encryption')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
 Import-Module (Join-Path $PSScriptRoot '../Providers/SQLAnywhere/SQLAnywhere.psm1')
 
 function ConvertTo-DBDataLiteral {
@@ -32,11 +32,7 @@ function Set-DBPrivateFile {
 function Test-DBPrivateAcl {
     param([string] $Path)
     if (-not $IsWindows) { throw 'DBBackup setup requires Windows NTFS ACLs.' }
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    foreach ($rule in $acl.Access) {
-        $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-        if ($rule.AccessControlType -eq 'Allow' -and $sid -notin @('S-1-5-18','S-1-5-32-544')) { throw "Private path has an unexpected access rule: $Path" }
-    }
+    if (-not (Test-DBPrivateAccess $Path)) { throw "Private path grants access beyond SYSTEM and Administrators: $Path. Run Aplicar-Configuracao.bat (Setup.ps1 -Apply)." }
 }
 
 function Test-DBInstance {
@@ -49,6 +45,9 @@ function Test-DBInstance {
         if ((Get-Content -LiteralPath $file -Raw) -match 'REPLACE_') { throw "An instance file still contains placeholders: $file" }
         Test-DBPrivateAcl $file
     }
+    # Existing state directories must already be private; a run never rewrites
+    # the permissions of a directory it did not create.
+    foreach ($path in $Configuration.Paths.Values) { if (Test-Path -LiteralPath $path) { Test-DBPrivateAcl $path } }
     if ($Configuration.Provider -eq 'SQLAnywhere') {
         $connection = Read-DBSqlConnection $Configuration.Database.ConnectionOptionsFile
         if ($connection.DBN -cne $Configuration.Database.Name) { throw 'SQL DBN must match Database.Name.' }
@@ -71,8 +70,8 @@ function Initialize-DBInstance {
     $candidateData = Import-PowerShellDataFile -LiteralPath (Join-Path $TemplateRoot "$Provider/config.example.psd1")
     $candidateData.InstanceName = $InstanceName
     Assert-DBInstanceIsolation (Read-DBConfiguration -Path $full -Data $candidateData) $InstancesRoot
-    Set-DBPrivateDirectory $root
-    Set-DBPrivateDirectory (Join-Path $root 'Secrets')
+    Set-DBPrivateDirectory $root -Force
+    Set-DBPrivateDirectory (Join-Path $root 'Secrets') -Force
     # Validate the candidate and isolation BEFORE committing its config file.
     $candidate = Join-Path $root "config-$([guid]::NewGuid().ToString('N')).tmp.psd1"
     try {
@@ -119,10 +118,10 @@ function Set-DBInteractiveConfiguration {
 
 function Initialize-DBSecret {
     param([Collections.IDictionary] $Configuration)
-    Set-DBPrivateDirectory $Configuration.SecretsRoot
+    Set-DBPrivateDirectory $Configuration.SecretsRoot -Force
     $dbFile = if ($Configuration.Provider -eq 'MySQL') { $Configuration.Database.DefaultsExtraFile } else { $Configuration.Database.ConnectionOptionsFile }
     foreach ($file in @($dbFile, $Configuration.Storage.ConfigPath, $Configuration.Encryption.RecipientsFile)) {
-        Set-DBPrivateDirectory (Split-Path -Parent $file)
+        Set-DBPrivateDirectory (Split-Path -Parent $file) -Force
     }
     if (-not (Test-Path -LiteralPath $dbFile)) {
         $hostName = Read-DBValue 'Host do banco (SQL Anywhere: host:porta)' 'localhost'
@@ -148,18 +147,34 @@ function Initialize-DBSecret {
     }
     if (-not (Test-Path -LiteralPath $Configuration.Storage.ConfigPath)) {
         $remote = $Configuration.Storage.RemoteRoot.Split(':')[0]
-        $access = Read-DBValue 'AWS access key ID' ''
-        $secret = Read-DBSecret 'AWS secret access key'
-        $region = Read-DBValue 'AWS region' 'us-east-1'
+        $provider = Read-DBValue 'Provedor S3 do rclone (AWS, Wasabi, Minio, Cloudflare, Other...)' 'AWS'
+        if ($provider -cnotmatch '^[A-Za-z0-9]+$') { throw 'Invalid rclone S3 provider name.' }
+        $endpoint = Read-DBValue 'Endpoint S3 (vazio para o padrao do provedor)' ''
+        if ($endpoint -match '\s') { throw 'The S3 endpoint cannot contain spaces.' }
+        $access = Read-DBValue 'Access key ID' ''
+        $secret = Read-DBSecret 'Secret access key'
+        $region = Read-DBValue 'Regiao' 'us-east-1'
         try {
-            if ($secret -match '[\r\n]') { throw 'Newlines in AWS secrets are not accepted.' }
-            Set-Content -LiteralPath $Configuration.Storage.ConfigPath -Value "[$remote]`ntype = s3`nprovider = AWS`nenv_auth = false`naccess_key_id = $access`nsecret_access_key = $secret`nregion = $region`n" -Encoding utf8
+            foreach ($value in @($access, $secret, $region)) { if ($value -match '[\r\n]') { throw 'Newlines in S3 settings are not accepted.' } }
+            $lines = @("[$remote]", 'type = s3', "provider = $provider", 'env_auth = false', "access_key_id = $access", "secret_access_key = $secret", "region = $region")
+            if ($endpoint) { $lines += "endpoint = $endpoint" }
+            Set-Content -LiteralPath $Configuration.Storage.ConfigPath -Value (($lines -join "`n") + "`n") -Encoding utf8
             Set-DBPrivateFile $Configuration.Storage.ConfigPath
         }
         finally { $secret = $null }
     }
     if (-not (Test-Path -LiteralPath $Configuration.Encryption.RecipientsFile)) {
-        $recipients = (Read-DBValue 'Destinatarios age PUBLICOS, separados por virgula' '') -split ',' | ForEach-Object { $_.Trim() }
+        # Validate before writing: an invalid file would otherwise be kept by the
+        # next setup run (existing secrets are never replaced).
+        $recipients = $null
+        for ($attempt = 1; $null -eq $recipients; $attempt++) {
+            $answer = Read-DBValue 'Destinatarios age PUBLICOS (age1...), separados por virgula' ''
+            try { $recipients = @(Get-DBRecipientList @($answer -split ',')) }
+            catch {
+                if ($attempt -ge 3) { throw }
+                Write-Warning "$($_.Exception.Message) Tente novamente."
+            }
+        }
         Set-Content -LiteralPath $Configuration.Encryption.RecipientsFile -Value $recipients -Encoding utf8
         Set-DBPrivateFile $Configuration.Encryption.RecipientsFile
     }
@@ -178,13 +193,18 @@ function Invoke-DBConfigurationApply {
         if ($Configuration.Contains('Schedule')) { $tasks = @(Get-DBSchedulerSnapshot (Get-DBTaskFolder $Configuration.InstanceName)) }
         return @(Get-DBSchedulePlan -Configuration $Configuration -Existing $tasks -PwshPath $PwshPath -ScriptPath $ScriptPath -WorkingDirectory (Split-Path $ScriptPath))
     }
-    Set-DBPrivateDirectory $Configuration.InstanceRoot
-    Set-DBPrivateDirectory $Configuration.SecretsRoot
+    Set-DBPrivateDirectory $Configuration.InstanceRoot -Force
+    Set-DBPrivateDirectory $Configuration.SecretsRoot -Force
     Set-DBPrivateFile $Configuration.ConfigPath
     $dbFile = if ($Configuration.Provider -eq 'MySQL') { $Configuration.Database.DefaultsExtraFile } else { $Configuration.Database.ConnectionOptionsFile }
-    foreach ($file in @($dbFile, $Configuration.Storage.ConfigPath, $Configuration.Encryption.RecipientsFile)) { Set-DBPrivateFile $file }
+    foreach ($file in @($dbFile, $Configuration.Storage.ConfigPath, $Configuration.Encryption.RecipientsFile)) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required instance file is missing: $file" }
+        Set-DBPrivateFile $file
+    }
+    # State directories: created private, or kept when already private/empty;
+    # a populated directory with foreign permissions is refused, never rewritten.
+    foreach ($path in $Configuration.Paths.Values) { Set-DBPrivateDirectory $path -Enforce }
     $null = Test-DBInstance $Configuration $InstancesRoot
-    foreach ($path in $Configuration.Paths.Values) { Set-DBPrivateDirectory $path }
     if (-not $Configuration.Contains('Schedule')) { return }
     $folder = Get-DBTaskFolder $Configuration.InstanceName
     $existing = @(Get-DBSchedulerSnapshot $folder)

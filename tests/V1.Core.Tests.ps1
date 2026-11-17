@@ -58,4 +58,54 @@ Describe 'DBBackup v1 instance configuration' {
         Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace("RuntimeRoot = 'Runtime'", "RuntimeRoot = '$foreign'"))
         { Assert-DBInstanceIsolation (Read-DBConfiguration $script:Config) $TestDrive } | Should -Throw '*share*'
     }
+    It 'validates run deadline, local payload retention and destination label' {
+        $text = Get-Content $script:Config -Raw
+        (Read-DBConfiguration $script:Config).Execution.RunTimeoutSeconds | Should -Be 39600
+        Set-Content $script:Config ($text.Replace('RunTimeoutSeconds = 39600', 'RunTimeoutSeconds = 60'))
+        { Read-DBConfiguration $script:Config } | Should -Throw '*RunTimeoutSeconds*'
+        Set-Content $script:Config ($text.Replace('KeepLocalPayload = $true', "KeepLocalPayload = 'no'"))
+        { Read-DBConfiguration $script:Config } | Should -Throw '*KeepLocalPayload*'
+        Set-Content $script:Config ($text.Replace("Destination = 's3'", "Destination = 'S3 Bucket'"))
+        { Read-DBConfiguration $script:Config } | Should -Throw '*Destination*'
+        Set-Content $script:Config ($text.Replace("; Destination = 's3'", '').Replace('; KeepLocalPayload = $true', ''))
+        $c = Read-DBConfiguration $script:Config
+        $c.Storage.Destination | Should -Be 's3'
+        $c.Retention.KeepLocalPayload | Should -BeTrue
+    }
+    It 'removes only generated stale Work and Staging entries' {
+        $runtime = Join-Path $TestDrive 'stale-runtime'
+        $current = 'c' * 32
+        foreach ($dir in @("Work/$current/db", "Work/$('d' * 32)/db", 'Work/manual', 'Staging/DBBackup_x_FULL', 'Staging/other', 'Pending/database/DBBackup_y')) {
+            $null = New-Item -ItemType Directory (Join-Path $runtime $dir) -Force
+        }
+        $r = [pscustomobject]@{ RunId = $current; Work = (Join-Path $runtime "Work/$current"); Staging = (Join-Path $runtime 'Staging'); Pending = (Join-Path $runtime 'Pending') }
+        $result = Clear-DBStaleRuntime $r
+        @($result.Removed).Count | Should -Be 2
+        @($result.Skipped).Count | Should -Be 2
+        Test-Path (Join-Path $runtime "Work/$current/db") | Should -BeTrue
+        Test-Path (Join-Path $runtime "Work/$('d' * 32)") | Should -BeFalse
+        Test-Path (Join-Path $runtime 'Staging/DBBackup_x_FULL') | Should -BeFalse
+        Test-Path (Join-Path $runtime 'Work/manual') | Should -BeTrue
+        Test-Path (Join-Path $runtime 'Staging/other') | Should -BeTrue
+        Test-Path (Join-Path $runtime 'Pending/database/DBBackup_y') | Should -BeTrue
+    }
+    It 'never rewrites permissions of an existing populated directory during a run' -Skip:(-not $IsWindows) {
+        Mock Set-Acl {} -ModuleName Runtime
+        Mock Test-DBPrivateAccess { $false } -ModuleName Runtime
+        $shared = Join-Path $TestDrive 'shared-logs'
+        $null = New-Item -ItemType Directory $shared
+        Set-Content (Join-Path $shared 'other-app.log') 'foreign'
+        Set-DBPrivateDirectory $shared
+        Should -Invoke Set-Acl -ModuleName Runtime -Times 0 -Exactly
+        { Set-DBPrivateDirectory $shared -Enforce } | Should -Throw '*not private*'
+        Should -Invoke Set-Acl -ModuleName Runtime -Times 0 -Exactly
+        Set-DBPrivateDirectory $shared -Force
+        Should -Invoke Set-Acl -ModuleName Runtime -Times 1 -Exactly
+        $empty = Join-Path $TestDrive 'empty-state'
+        $null = New-Item -ItemType Directory $empty
+        Set-DBPrivateDirectory $empty -Enforce
+        Should -Invoke Set-Acl -ModuleName Runtime -Times 2 -Exactly
+        Set-DBPrivateDirectory (Join-Path $TestDrive 'brand-new')
+        Should -Invoke Set-Acl -ModuleName Runtime -Times 3 -Exactly
+    }
 }

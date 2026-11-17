@@ -13,8 +13,13 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Require the default release branch
+        run: |
+          # Releases are cut only from main; a dispatch from any other ref fails
+          # visibly instead of tagging an unreviewed commit.
+          if ($env:GITHUB_REF -cne 'refs/heads/main') { throw "Release must be dispatched from main (got $env:GITHUB_REF)." }
       - name: Checkout selected commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
       - name: Install verification dependencies

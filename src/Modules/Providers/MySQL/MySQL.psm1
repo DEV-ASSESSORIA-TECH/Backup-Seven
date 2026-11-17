@@ -80,4 +80,9 @@ function Invoke-DBMySql {
         Metadata = @{ Strategy = 'force+granular'; Database = $Configuration.Database.Name; General = $generalInfo; ListingSucceeded = $listingSucceeded; Objects = $objects; ExtraArguments = $argsMap.ExtraArguments }
     }
 }
-Export-ModuleMember -Function Invoke-DBMySql
+function Get-DBMySqlSizeEstimate {
+    param([Collections.IDictionary] $Configuration)
+    $timeout = [Math]::Min(300, [double] $Configuration.Execution.ToolTimeoutSeconds)
+    return Get-MySqlDatabaseSize -MySqlPath $Configuration.Tools.MySql -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile -DatabaseName $Configuration.Database.Name -TimeoutSeconds $timeout
+}
+Export-ModuleMember -Function Invoke-DBMySql, Get-DBMySqlSizeEstimate
