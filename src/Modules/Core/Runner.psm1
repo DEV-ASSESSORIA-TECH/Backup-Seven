@@ -20,6 +20,7 @@ function Invoke-DBBackup {
     }
     catch { Write-Error (Protect-DBMessage $_.Exception.Message) -ErrorAction Continue; return 2 }
     $runtime = $null
+    $exitCode = 1
     try {
         $runtime = New-DBRuntime $c
         if ($null -eq $runtime) { return 3 }
@@ -53,18 +54,25 @@ function Invoke-DBBackup {
         Write-DBLog $runtime.LogPath 'Complete' "Failed=$failed; degraded=$degraded; maintenance=$maintenance."
         try { Publish-DBLog -Configuration $c -Runtime $runtime }
         catch { $failed = $true; Write-DBLog $runtime.LogPath 'LogUpload' $_.Exception.Message 'ERROR' }
-        if ($failed -or ($degraded -and -not $maintenance)) { return 1 }
-        if (-not $maintenance) { return 4 }
-        if ($degraded) { return 5 }
-        return 0
+        if ($failed -or ($degraded -and -not $maintenance)) { $exitCode = 1 }
+        elseif (-not $maintenance) { $exitCode = 4 }
+        elseif ($degraded) { $exitCode = 5 }
+        else { $exitCode = 0 }
     }
     catch {
         if ($null -ne $runtime) { Write-DBLog $runtime.LogPath 'Execution' $_.Exception.Message 'ERROR' }
         else { Write-Error (Protect-DBMessage $_.Exception.Message) -ErrorAction Continue }
-        return 1
+        $exitCode = 1
     }
     finally {
-        if ($null -ne $runtime) { Close-DBRuntime $runtime }
+        if ($null -ne $runtime) {
+            try { Close-DBRuntime $runtime }
+            catch {
+                Write-DBLog $runtime.LogPath 'Cleanup' $_.Exception.Message 'ERROR'
+                $exitCode = if ($exitCode -in @(0,4)) { 4 } else { 1 }
+            }
+        }
     }
+    return $exitCode
 }
 Export-ModuleMember -Function Invoke-DBBackup

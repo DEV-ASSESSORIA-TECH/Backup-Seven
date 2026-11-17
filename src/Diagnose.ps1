@@ -1,0 +1,14 @@
+#requires -Version 7.0
+[CmdletBinding()]
+param([Parameter(Mandatory)][string] $ConfigPath, [string] $InstancesRoot = (Join-Path $PSScriptRoot 'Instances'))
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Setup.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Configuration.psm1')
+Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Runtime.psm1')
+try {
+    $configuration = Read-DBConfiguration $ConfigPath
+    Test-DBInstance -Configuration $configuration -InstancesRoot $InstancesRoot
+    exit 0
+}
+catch { Write-Error (Protect-DBMessage $_.Exception.Message) -ErrorAction Continue; exit 2 }

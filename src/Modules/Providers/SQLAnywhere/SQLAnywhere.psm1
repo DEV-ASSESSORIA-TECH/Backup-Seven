@@ -31,7 +31,7 @@ function ConvertTo-DBSqlConnection {
     }) -join ';')
 }
 
-function Write-DBSqlOptions {
+function Write-DBSqlOption {
     param([string] $Path, [Collections.IDictionary] $Values)
     $connection = ConvertTo-DBSqlConnection $Values
     # Quote the response-file argument using the Windows command-line rules.
@@ -52,7 +52,7 @@ function Invoke-DBSqlAnywhere {
     $validationOptions = Join-Path $secretRoot 'validation.options'
     try {
         $connection.ASTART = 'NO'
-        Write-DBSqlOptions $backupOptions $connection
+        Write-DBSqlOption $backupOptions $connection
         # Default dbbackup copies ALL files; do not add -r, -x, -xo, -n, -s.
         $backup = Invoke-DBTool -Executable $Configuration.Tools.DbBackup -Arguments @("@$backupOptions", $root)
         if ($backup.ExitCode -ne 0) { throw "SQL Anywhere backup failed (exit $($backup.ExitCode)); tool output omitted to protect credentials." }
@@ -69,7 +69,7 @@ function Invoke-DBSqlAnywhere {
             LINKS = 'SHMEM'; ASTART = 'YES'; ASTOP = 'YES'; CPOOL = 'NO'; INT = 'NO'
             START = "`"$engine`" -qi -x none -sb 0 -sf all -im v -ga"
         }
-        Write-DBSqlOptions $validationOptions $local
+        Write-DBSqlOption $validationOptions $local
         foreach ($flags in @(@('-d'), @())) {
             $argsList = @("@$validationOptions", '-im', 'v') + @($flags)
             $validation = Invoke-DBTool -Executable $Configuration.Tools.DbValid -Arguments $argsList

@@ -31,9 +31,9 @@ function Assert-DBIdentifier {
 
 function Read-DBConfiguration {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string] $Path)
+    param([Parameter(Mandatory)][string] $Path, [Collections.IDictionary] $Data)
     $Path = [IO.Path]::GetFullPath($Path)
-    $c = Import-PowerShellDataFile -LiteralPath $Path
+    $c = if ($null -ne $Data) { $Data } else { Import-PowerShellDataFile -LiteralPath $Path }
     if (-not $c.Contains('SchemaVersion') -or $c.SchemaVersion -ne 1) { throw 'SchemaVersion must be 1.' }
     foreach ($key in @('InstanceName', 'Provider', 'Tools', 'Database', 'Storage', 'Encryption', 'Paths', 'Archive', 'Retention')) {
         if (-not $c.Contains($key)) { throw "Missing configuration key: $key" }
@@ -56,6 +56,9 @@ function Read-DBConfiguration {
         }
     }
     $roots = @($c.Paths.RuntimeRoot, $c.Paths.CompletedRoot, $c.Paths.LogRoot)
+    if (-not [IO.Path]::GetPathRoot($c.Paths.RuntimeRoot).Equals([IO.Path]::GetPathRoot($c.Paths.CompletedRoot), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Runtime and Completed must be on the same volume for atomic bundle moves.'
+    }
     for ($i = 0; $i -lt $roots.Count; $i++) {
         for ($j = $i + 1; $j -lt $roots.Count; $j++) {
             if ((Test-DBPathWithin $roots[$i] $roots[$j]) -or (Test-DBPathWithin $roots[$j] $roots[$i])) { throw 'State paths must not overlap.' }
@@ -70,6 +73,9 @@ function Read-DBConfiguration {
     $c.Encryption.RecipientsFile = Resolve-DBPath ([string] $c.Encryption.RecipientsFile) $base
     $credentialKey = if ($c.Provider -eq 'MySQL') { 'DefaultsExtraFile' } else { 'ConnectionOptionsFile' }
     $c.Database[$credentialKey] = Resolve-DBPath ([string] $c.Database[$credentialKey]) $base
+    foreach ($secret in @($c.Database[$credentialKey], $c.Storage.ConfigPath, $c.Encryption.RecipientsFile)) {
+        if (-not (Test-DBPathWithin $secret $c.SecretsRoot)) { throw 'Secret files must belong to this instance Secrets directory.' }
+    }
     if (-not $c.Database.Contains('ExtraArguments')) { $c.Database.ExtraArguments = @() }
     if ([int] $c.Archive.CompressionLevel -notin 0..9 -or [int] $c.Archive.CpuLimitPercent -notin 1..100) { throw 'Invalid Archive settings.' }
     foreach ($key in @('CompletedDays', 'LogDays')) {
@@ -95,16 +101,12 @@ function Read-DBConfiguration {
 
 function Assert-DBInstanceIsolation {
     param([Collections.IDictionary] $Configuration, [string] $InstancesRoot)
+    if (-not (Test-Path -LiteralPath $InstancesRoot)) { return }
     foreach ($file in Get-ChildItem -LiteralPath $InstancesRoot -Filter config.psd1 -File -Recurse -ErrorAction Stop) {
         if ($file.FullName -eq $Configuration.ConfigPath) { continue }
         $other = Read-DBConfiguration $file.FullName
         if ($other.InstanceName -eq $Configuration.InstanceName) { throw "Duplicate InstanceName: $($other.InstanceName)" }
-        foreach ($a in $Configuration.Paths.Values) {
-            foreach ($b in $other.Paths.Values) {
-                if ((Test-DBPathWithin $a $b) -or (Test-DBPathWithin $b $a)) { throw 'Instances share overlapping state directories.' }
-            }
-        }
-        foreach ($a in @($Configuration.InstanceRoot, $Configuration.SecretsRoot)) {
+        foreach ($a in @($Configuration.InstanceRoot, $Configuration.SecretsRoot) + @($Configuration.Paths.Values)) {
             foreach ($b in @($other.InstanceRoot, $other.SecretsRoot) + @($other.Paths.Values)) {
                 if ((Test-DBPathWithin $a $b) -or (Test-DBPathWithin $b $a)) { throw 'Instances share configuration or secret directories.' }
             }

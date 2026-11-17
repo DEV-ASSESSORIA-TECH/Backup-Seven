@@ -1,99 +1,12 @@
 name: Release
-
 on:
   workflow_dispatch:
-
 permissions:
-  contents: write
-
+  contents: read
 jobs:
-  release:
+  qualification-gate:
     runs-on: windows-latest
-
-    defaults:
-      run:
-        shell: pwsh
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Read and validate version
-        run: |
-          $version = (Get-Content ./VERSION -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
-              throw "VERSION must use X.Y.Z format: $version"
-          }
-
-          if (-not (Select-String -LiteralPath ./CHANGELOG.md -Pattern "\[$([regex]::Escape($version))\]" -Quiet)) {
-              throw "CHANGELOG.md has no entry for version $version."
-          }
-
-          "VERSION=$version" >> $env:GITHUB_ENV
-          "TAG=v$version" >> $env:GITHUB_ENV
-          "ZIP_PATH=dist/BackupSeven-$version.zip" >> $env:GITHUB_ENV
-
-      - name: Ensure tag and release do not exist
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $PSNativeCommandUseErrorActionPreference = $false
-
-          git rev-parse --verify --quiet "refs/tags/$env:TAG" | Out-Null
-          $tagCheckExitCode = $LASTEXITCODE
-          if ($tagCheckExitCode -eq 0) {
-              throw "Tag $env:TAG already exists."
-          }
-          if ($tagCheckExitCode -ne 1) {
-              throw "Unable to check tag $env:TAG (exit code $tagCheckExitCode)."
-          }
-
-          gh release view $env:TAG *> $null
-          $releaseCheckExitCode = $LASTEXITCODE
-          if ($releaseCheckExitCode -eq 0) {
-              throw "Release $env:TAG already exists."
-          }
-
-          Write-Host "Tag and release $env:TAG are available."
-          exit 0
-
-      - name: Build production package
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $packageScript = './scripts/package.ps1'
-          if (-not (Test-Path -LiteralPath $packageScript -PathType Leaf)) {
-              throw "Package script was not found: $packageScript"
-          }
-
-          Write-Host "Building package from $(Get-Location)..."
-          & $packageScript
-
-          $archive = Get-Item -LiteralPath $env:ZIP_PATH -ErrorAction Stop
-          $checksumPath = "$($archive.FullName).sha256"
-          if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
-              throw "Package checksum was not created: $checksumPath"
-          }
-
-          $recordedHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+')[0]
-          $actualHash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($recordedHash -ne $actualHash) {
-              throw "SHA256 validation failed for $($archive.Name)."
-          }
-
-          Write-Host "Package created: $($archive.FullName)"
-          Write-Host "SHA256: $actualHash"
-
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $PSNativeCommandUseErrorActionPreference = $true
-          gh release create `
-              $env:TAG `
-              $env:ZIP_PATH `
-              "$env:ZIP_PATH.sha256" `
-              --target $env:GITHUB_SHA `
-              --title "BackupSeven $env:VERSION" `
-              --generate-notes
+      - name: Require final v1 qualification
+        shell: pwsh
+        run: throw 'DBBackup v1 is a development snapshot. Recovery review and release steps 7-11 are pending.'

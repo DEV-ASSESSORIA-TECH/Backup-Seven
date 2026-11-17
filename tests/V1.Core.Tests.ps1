@@ -26,6 +26,12 @@ Describe 'DBBackup v1 instance configuration' {
         Set-Content $script:Config $text
         { Read-DBConfiguration $script:Config } | Should -Throw '*overlap*'
     }
+    It 'rejects cross-volume Completed to preserve atomic bundle transitions' {
+        $currentRoot=[IO.Path]::GetPathRoot($TestDrive)
+        $otherRoot=if ($currentRoot -eq 'Z:\') {'Y:\DBBackupCompleted'} else {'Z:\DBBackupCompleted'}
+        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace("CompletedRoot = 'Completed'", "CompletedRoot = '$otherRoot'"))
+        { Read-DBConfiguration $script:Config } | Should -Throw '*same volume*'
+    }
     It 'locks only the selected instance' {
         Mock Set-Acl {} -ModuleName Runtime
         $c = Read-DBConfiguration $script:Config
@@ -42,5 +48,14 @@ Describe 'DBBackup v1 instance configuration' {
     }
     It 'redacts connection passwords including spaces' {
         Protect-DBMessage 'PWD="secret phrase";password=hidden' | Should -Be 'PWD=[REDACTED];password=[REDACTED]'
+    }
+    It 'rejects state inside another instance Secrets directory' {
+        $other = Join-Path $TestDrive 'other/config.psd1'
+        $null = New-Item -ItemType Directory (Split-Path $other) -Force
+        $text = (Get-Content $script:Config -Raw).Replace("InstanceName = 'MySQL'", "InstanceName = 'Other'")
+        Set-Content $other $text
+        $foreign = (Join-Path (Split-Path $other) 'Secrets/private-state').Replace("'", "''")
+        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace("RuntimeRoot = 'Runtime'", "RuntimeRoot = '$foreign'"))
+        { Assert-DBInstanceIsolation (Read-DBConfiguration $script:Config) $TestDrive } | Should -Throw '*share*'
     }
 }

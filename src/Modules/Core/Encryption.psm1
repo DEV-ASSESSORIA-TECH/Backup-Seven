@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'Process.psm1')
 
-function Read-DBRecipients {
+function Read-DBRecipient {
     param([string] $Path)
     $recipients = @()
     foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
@@ -16,7 +16,7 @@ function Read-DBRecipients {
 
 function Protect-DBArchive {
     param([string] $AgePath, [string] $InputPath, [string] $OutputPath, [string] $RecipientsFile)
-    $recipients = @(Read-DBRecipients $RecipientsFile)
+    $recipients = @(Read-DBRecipient $RecipientsFile)
     if (Test-Path -LiteralPath $OutputPath) { throw 'Encrypted destination already exists.' }
     $arguments = @('--encrypt', '--output', $OutputPath)
     # Pass the validated snapshot, not a file that could change after validation.
@@ -32,4 +32,4 @@ function Protect-DBArchive {
         throw
     }
 }
-Export-ModuleMember -Function Read-DBRecipients, Protect-DBArchive
+Export-ModuleMember -Function Read-DBRecipient, Protect-DBArchive

@@ -1,8 +1,33 @@
 # Histórico de alterações
 
-Todas as alterações relevantes do BackupSeven são registradas neste arquivo. O
+Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
+
+## [Unreleased] — desenvolvimento da v1.0.0, passos 1–6
+
+### Alterado (incompatível)
+
+- Aplicação genérica DBBackup, com configuração schema 1 e instâncias isoladas.
+- Núcleo compartilhado e provedores MySQL 5, SQL Anywhere 17 e diretórios.
+- Entradas, setup, secrets e agendamento comuns; tarefas identificadas por
+  instância e pelo caminho canônico de sua configuração.
+- Removidas as entradas/configurações antigas do Seven. Não há migração
+  automática dos artefatos ou tarefas da linha 0.x.
+
+### Adicionado
+
+- Pipeline obrigatório 7z + age, manifesto, estado de artefatos, promoção
+  atômica para Pending e reenvio com destino/hash preservados.
+- SQL Anywhere completo sem rotação/truncagem, com validação da cópia local
+  e conferência de que os arquivos copiados não foram modificados.
+- Diagnóstico local e planejamento de tarefas sem gravações; proteção dos
+  arquivos de configuração/credenciais por ACL e preservação de secrets existentes.
+- Verificação por parsing, PSScriptAnalyzer e Pester com ferramentas simuladas.
+
+Esta entrega para no passo 6. Recovery, homologação real, integração de métricas,
+limites de processos, empacotamento e release permanecem pendentes. VERSION não
+foi elevado e nenhuma tag/release foi criada. O histórico 0.x abaixo é preservado.
 
 ## [0.6.0] - 2026-11-16
 

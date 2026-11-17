@@ -12,7 +12,7 @@ function Assert-DBBackupDependency {
         }
     }
     foreach ($path in $paths) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required dependency is missing: $path" } }
-    $null = Read-DBRecipients $Configuration.Encryption.RecipientsFile
+    $null = Read-DBRecipient $Configuration.Encryption.RecipientsFile
     $null = Test-DBStorageConfiguration -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -RemoteRoot $Configuration.Storage.RemoteRoot
 }
 
@@ -53,9 +53,9 @@ function Send-DBBundle {
     $s.Transport = 'CONFIRMED'
     Write-DBJson (Join-Path $BundlePath 'state.json') $s
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
-    # Cross-volume Completed is allowed: payload remains recoverable in Pending
-    # if the move fails, and the next retry verifies its hash again.
-    Move-Item -LiteralPath $BundlePath -Destination $destination -ErrorAction Stop
+    # Configuration requires the same volume: never split payload and state
+    # with a cross-volume copy/delete when confirming transport.
+    [IO.Directory]::Move($BundlePath, $destination)
 }
 
 function Publish-DBPackage {
@@ -75,7 +75,10 @@ function Publish-DBPackage {
         }
     }
     $versions = @{}
-    foreach ($key in $Configuration.Tools.Keys) {
+    $toolKeys = @('SevenZip', 'Age', 'Rclone')
+    if ($Job.Provider -eq 'MySQL') { $toolKeys += @('MySql', 'MySqlDump') }
+    if ($Job.Provider -eq 'SQLAnywhere') { $toolKeys += @('DbBackup', 'DbValid', 'DbEngine') }
+    foreach ($key in $toolKeys) {
         $tool = Get-Item -LiteralPath $Configuration.Tools[$key] -ErrorAction Stop
         $versions[$key] = @{ FileVersion = $tool.VersionInfo.FileVersion; Sha256 = (Get-FileHash -LiteralPath $tool.FullName -Algorithm SHA256).Hash }
     }

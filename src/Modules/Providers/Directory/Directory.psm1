@@ -12,6 +12,8 @@ function Copy-DBDirectoryContent {
 }
 
 function Invoke-DBDirectory {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Configuration', Justification = 'Common provider interface.')]
+    [CmdletBinding()]
     param([Collections.IDictionary] $Configuration, $Job, $Runtime)
     $started = [DateTime]::UtcNow
     if (-not (Test-Path -LiteralPath $Job.SourcePath -PathType Container)) { throw 'Directory source was not found.' }

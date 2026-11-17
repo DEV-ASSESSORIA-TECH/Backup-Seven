@@ -21,7 +21,7 @@ $script:MetricHelp = [ordered]@{
 
 $script:IdentifierPattern = '^[a-z0-9]+([-_][a-z0-9]+)*$'
 
-function Test-SevenMetricIdentifier {
+function Test-DBMetricIdentifier {
     [CmdletBinding()]
     [OutputType([bool])]
     param([AllowNull()][string] $Value)
@@ -29,26 +29,26 @@ function Test-SevenMetricIdentifier {
     return (-not [string]::IsNullOrEmpty($Value)) -and ($Value -cmatch $script:IdentifierPattern)
 }
 
-function ConvertTo-SevenLabelValue {
+function ConvertTo-DBLabelValue {
     param([AllowNull()][string] $Value)
 
     if ($null -eq $Value) { return '' }
     return $Value.Replace('\', '\\').Replace('"', '\"').Replace("`r", '').Replace("`n", '\n')
 }
 
-function ConvertTo-SevenMetricNumber {
+function ConvertTo-DBMetricNumber {
     param([Parameter(Mandatory)][double] $Value)
 
     return $Value.ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
-function ConvertTo-SevenUnixSecond {
+function ConvertTo-DBUnixSecond {
     param([Parameter(Mandatory)][DateTime] $Value)
 
     return [long] [Math]::Floor(([DateTimeOffset] $Value.ToUniversalTime()).ToUnixTimeMilliseconds() / 1000)
 }
 
-function Get-SevenBackupMetricFileName {
+function Get-DBBackupMetricFileName {
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -59,7 +59,7 @@ function Get-SevenBackupMetricFileName {
     return '{0}__{1}.prom' -f $Service, $BackupId
 }
 
-function Read-SevenBackupMetricState {
+function Read-DBBackupMetricState {
     <#
     Reads the last known success (and success due time) from a previously
     written file, so a success that already left the local retention window
@@ -89,7 +89,7 @@ function Read-SevenBackupMetricState {
     return $state
 }
 
-function Format-SevenBackupMetric {
+function Format-DBBackupMetric {
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -108,13 +108,13 @@ function Format-SevenBackupMetric {
         [System.Collections.IDictionary] $InfoLabels = @{}
     )
 
-    if (-not (Test-SevenMetricIdentifier -Value $Service)) { throw "Invalid backup service identifier: '$Service'." }
-    if (-not (Test-SevenMetricIdentifier -Value $BackupId)) { throw "Invalid backup identifier: '$BackupId'." }
+    if (-not (Test-DBMetricIdentifier -Value $Service)) { throw "Invalid backup service identifier: '$Service'." }
+    if (-not (Test-DBMetricIdentifier -Value $BackupId)) { throw "Invalid backup identifier: '$BackupId'." }
 
     $identity = 'service="{0}",backup_id="{1}"' -f $Service, $BackupId
     $samples = [ordered]@{}
     $samples.backup_info = $null
-    $samples.backup_collection_timestamp_seconds = [string] (ConvertTo-SevenUnixSecond -Value $CollectedAtUtc)
+    $samples.backup_collection_timestamp_seconds = [string] (ConvertTo-DBUnixSecond -Value $CollectedAtUtc)
     $samples.backup_collection_success = if ($CollectionSucceeded) { '1' } else { '0' }
 
     if ($CollectionSucceeded) {
@@ -125,12 +125,12 @@ function Format-SevenBackupMetric {
     }
 
     if ($null -ne $AttemptFinishedAtUtc) {
-        $samples.backup_last_attempt_timestamp_seconds = [string] (ConvertTo-SevenUnixSecond -Value $AttemptFinishedAtUtc)
+        $samples.backup_last_attempt_timestamp_seconds = [string] (ConvertTo-DBUnixSecond -Value $AttemptFinishedAtUtc)
         if ($null -ne $AttemptSucceeded) {
             $samples.backup_last_attempt_success = if ($AttemptSucceeded) { '1' } else { '0' }
         }
         if ($null -ne $AttemptDurationSeconds) {
-            $samples.backup_last_attempt_duration_seconds = ConvertTo-SevenMetricNumber -Value ([Math]::Max([double] 0, [double] $AttemptDurationSeconds))
+            $samples.backup_last_attempt_duration_seconds = ConvertTo-DBMetricNumber -Value ([Math]::Max([double] 0, [double] $AttemptDurationSeconds))
         }
         if ($null -ne $AttemptDegraded) {
             $samples.backup_last_attempt_degraded = if ($AttemptDegraded) { '1' } else { '0' }
@@ -138,7 +138,7 @@ function Format-SevenBackupMetric {
     }
 
     if ($null -ne $ExpectedIntervalSeconds -and $ExpectedIntervalSeconds -gt 0) {
-        $samples.backup_expected_interval_seconds = ConvertTo-SevenMetricNumber -Value $ExpectedIntervalSeconds
+        $samples.backup_expected_interval_seconds = ConvertTo-DBMetricNumber -Value $ExpectedIntervalSeconds
     }
 
     if ($null -ne $SuccessDueTimestamp -and $SuccessDueTimestamp -gt 0) {
@@ -158,7 +158,7 @@ function Format-SevenBackupMetric {
                 if ($key -in @('service', 'backup_id', 'job', 'instance', 'host') -or $key -notmatch '^[a-z_][a-z0-9_]*$') {
                     throw "Invalid backup_info label: '$key'."
                 }
-                $labels.Add(('{0}="{1}"' -f $key, (ConvertTo-SevenLabelValue -Value ([string] $InfoLabels[$key]))))
+                $labels.Add(('{0}="{1}"' -f $key, (ConvertTo-DBLabelValue -Value ([string] $InfoLabels[$key]))))
             }
             $null = $builder.Append("$name{$($labels -join ',')} 1`n")
         }
@@ -170,7 +170,7 @@ function Format-SevenBackupMetric {
     return $builder.ToString()
 }
 
-function Write-SevenBackupMetric {
+function Write-DBBackupMetric {
     <#
     Writes <Service>__<BackupId>.prom atomically: UTF-8 without BOM, LF line
     endings, a final newline and a .prom.tmp sibling that the reader ignores.
@@ -189,7 +189,7 @@ function Write-SevenBackupMetric {
         throw "Monitoring textfile directory was not found: $Directory"
     }
 
-    $path = Join-Path $Directory (Get-SevenBackupMetricFileName -Service $Service -BackupId $BackupId)
+    $path = Join-Path $Directory (Get-DBBackupMetricFileName -Service $Service -BackupId $BackupId)
     $temporaryPath = "$path.tmp"
     try {
         [System.IO.File]::WriteAllText($temporaryPath, $Content, [System.Text.UTF8Encoding]::new($false))
@@ -204,4 +204,4 @@ function Write-SevenBackupMetric {
     return $path
 }
 
-Export-ModuleMember -Function Test-SevenMetricIdentifier, Get-SevenBackupMetricFileName, Read-SevenBackupMetricState, Format-SevenBackupMetric, Write-SevenBackupMetric
+Export-ModuleMember -Function Test-DBMetricIdentifier, Get-DBBackupMetricFileName, Read-DBBackupMetricState, Format-DBBackupMetric, Write-DBBackupMetric

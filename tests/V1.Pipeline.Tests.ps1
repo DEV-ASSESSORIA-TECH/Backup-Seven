@@ -24,7 +24,7 @@ Describe 'Encrypted pipeline with simulated external tools' {
     AfterEach { Clear-DBTestEnvironment }
     It 'publishes a bundle with manifest and encrypted payload metadata' {
         $code = Invoke-DBBackup -ConfigPath $script:Config -All
-        if ($code -ne 0) { Get-ChildItem "$script:Root/instance/Logs" -File | ForEach-Object { Get-Content $_.FullName | Write-Host } }
+        if ($code -ne 0) { Get-ChildItem "$script:Root/instance/Logs" -File | ForEach-Object { Get-Content $_.FullName | Write-Information -InformationAction Continue } }
         $code | Should -Be 0
         $bundle = Get-ChildItem "$script:Root/instance/Completed/database" -Directory
         $c = Read-DBConfiguration $script:Config
@@ -56,7 +56,7 @@ Describe 'Encrypted pipeline with simulated external tools' {
         Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('s3:test-bucket', 's3:new-bucket'))
         $env:DBBACKUP_FAKE_RCLONE_CHECK_EXIT='0'
         $code = Invoke-DBBackup -ConfigPath $script:Config -All
-        if ($code -ne 0) { Get-ChildItem "$script:Root/instance/Logs" -File | ForEach-Object { Get-Content $_.FullName | Write-Host } }
+        if ($code -ne 0) { Get-ChildItem "$script:Root/instance/Logs" -File | ForEach-Object { Get-Content $_.FullName | Write-Information -InformationAction Continue } }
         $code | Should -Be 0
         $state = Get-Content (Join-Path "$script:Root/instance/Completed/database/$($pending.Name)" 'state.json') -Raw | ConvertFrom-Json
         $state.Sha256 | Should -Be $s.Sha256
@@ -83,8 +83,29 @@ Describe 'Encrypted pipeline with simulated external tools' {
     It 'rejects a private key or an empty recipients file' {
         $path=Join-Path $script:Root 'recipients.txt'
         Set-Content $path 'AGE-SECRET-KEY-1PRIVATE'
-        { Read-DBRecipients $path } | Should -Throw '*public*'
+        { Read-DBRecipient $path } | Should -Throw '*public*'
         Set-Content $path '# no recipients'
-        { Read-DBRecipients $path } | Should -Throw '*At least*'
+        { Read-DBRecipient $path } | Should -Throw '*At least*'
+    }
+    It 'runs a directory-only job without requiring unused database executables' {
+        $source=Join-Path $script:Root 'documents'
+        $null=New-Item -ItemType Directory $source
+        Set-Content (Join-Path $source 'file.txt') 'document'
+        $text=(Get-Content $script:Config -Raw).Replace('Directories = @()', "Directories = @(@{Id='documents';SourcePath='$($source.Replace("'","''"))'})")
+        $text=$text.Replace('mysql.exe','absent-mysql.exe').Replace('mysqldump.exe','absent-mysqldump.exe')
+        Set-Content $script:Config $text
+        Invoke-DBBackup -ConfigPath $script:Config -Job documents | Should -Be 0
+        @(Get-ChildItem "$script:Root/instance/Completed/documents" -Directory).Count | Should -Be 1
+    }
+    It 'continues directory jobs after an incomplete MySQL fallback' {
+        $source=Join-Path $script:Root 'documents'
+        $null=New-Item -ItemType Directory $source
+        Set-Content (Join-Path $source 'file.txt') 'document'
+        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('Directories = @()', "Directories = @(@{Id='documents';SourcePath='$($source.Replace("'","''"))'})"))
+        $env:DBBACKUP_FAKE_MYSQLDUMP_NORMAL_EXIT='2'
+        $env:DBBACKUP_FAKE_MYSQL_EXIT='1'
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 1
+        @(Get-ChildItem "$script:Root/instance/Completed/documents" -Directory).Count | Should -Be 1
+        @(Get-ChildItem "$script:Root/instance/Completed/database" -Directory).Count | Should -Be 1
     }
 }
