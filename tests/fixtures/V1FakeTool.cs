@@ -11,8 +11,12 @@ internal static class FakeExternalTool
 
     private static string StoredObject(string remotePath)
     {
-        var safe = new string(remotePath.Select(character => char.IsLetterOrDigit(character) || character == '.' || character == '-' || character == '_' ? character : '_').ToArray());
-        return Path.Combine(RemoteStore(), safe);
+        // Short, fixed-length name: full remote paths exceed MAX_PATH on Windows.
+        using (var algorithm = System.Security.Cryptography.SHA256.Create())
+        {
+            var digest = algorithm.ComputeHash(System.Text.Encoding.UTF8.GetBytes(remotePath));
+            return Path.Combine(RemoteStore(), BitConverter.ToString(digest).Replace("-", "").Substring(0, 32).ToLowerInvariant());
+        }
     }
 
     private static int ExitCode(string variableName)

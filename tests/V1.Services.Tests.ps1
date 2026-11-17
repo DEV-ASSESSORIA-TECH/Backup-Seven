@@ -131,8 +131,8 @@ Context 'Archive module' {
             $archive = Join-Path $script:TestRoot "external-$([guid]::NewGuid().ToString('N')).7z"
             $null = New-DBArchiveWithContent -SevenZipPath $script:SevenZip -MetadataPath $meta -ContentPath $content -ArchivePath $archive
             $text = Get-Content -LiteralPath $archive -Raw
-            $text | Should -Match '(?m)^ENTRY:manifest\.json$'
-            $text | Should -Match '(?m)^ENTRY:content/sub/file\.txt$'
+            $text | Should -Match '(?m)^ENTRY:manifest\.json\r?$'
+            $text | Should -Match '(?m)^ENTRY:content/sub/file\.txt\r?$'
             if ($leaf -cne 'content') { $text | Should -Not -Match "ENTRY:$([regex]::Escape($leaf))/" }
             Test-Path -LiteralPath (Join-Path $content 'sub/file.txt') | Should -BeTrue
         }

@@ -206,9 +206,9 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $bundle = Get-ChildItem "$script:Root/instance/Completed/documents" -Directory
         $s = Read-DBArtifact $bundle.FullName (Read-DBConfiguration $script:Config)
         $text = Get-Content (Join-Path $bundle.FullName $s.FileName) -Raw
-        $text | Should -Match '(?m)^ENTRY:content/manifest\.json$'
-        $text | Should -Match '(?m)^ENTRY:content/sub/file\.txt$'
-        $text | Should -Match '(?m)^ENTRY:manifest\.json$'
+        $text | Should -Match '(?m)^ENTRY:content/manifest\.json\r?$'
+        $text | Should -Match '(?m)^ENTRY:content/sub/file\.txt\r?$'
+        $text | Should -Match '(?m)^ENTRY:manifest\.json\r?$'
         $text | Should -Match '"Path":\s*"content/sub/file.txt"'
         Get-Content (Join-Path $source 'sub/file.txt') -Raw | Should -Match 'document'
         @(Get-ChildItem "$script:Root/instance/Runtime/Work").Count | Should -Be 0
