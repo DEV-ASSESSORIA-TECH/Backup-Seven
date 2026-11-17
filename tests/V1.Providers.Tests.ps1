@@ -7,7 +7,7 @@ Describe 'MySQL provider outcomes' {
     BeforeEach {
         $script:C = @{Tools=@{MySqlDump='fake'; MySql='fake'}; Database=@{Name='db'; DefaultsExtraFile='secret'; ExtraArguments=@()}}
         $script:J = [pscustomobject]@{Id='database'}
-        $script:R = [pscustomobject]@{Work=(Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))}
+        $script:R = [pscustomobject]@{Work=(Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8)))}
         Mock Invoke-MySqlDatabaseDump {
             param($OutputPath)
             Set-Content $OutputPath 'SQL'

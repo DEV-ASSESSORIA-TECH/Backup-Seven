@@ -19,6 +19,26 @@ internal static class FakeExternalTool
         }
     }
 
+    // The runner's csc targets .NET Framework 4.x, which defaults to legacy
+    // MAX_PATH handling. Test paths under Pester's TestDrive plus generated
+    // artifact names exceed 260 characters, so every file access goes through
+    // an extended-length (\\?\) path with legacy handling switched off.
+    private static void EnableLongPaths()
+    {
+        AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
+        AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
+    }
+
+    private static string L(string path)
+    {
+        if (path.StartsWith(@"\\?\", StringComparison.Ordinal))
+        {
+            return path;
+        }
+        var full = Path.GetFullPath(path);
+        return full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full.Substring(2) : @"\\?\" + full;
+    }
+
     private static int ExitCode(string variableName)
     {
         var value = Environment.GetEnvironmentVariable(variableName);
@@ -28,10 +48,12 @@ internal static class FakeExternalTool
 
     public static int Main(string[] args)
     {
+        // Must run before any System.IO path API caches the legacy setting.
+        EnableLongPaths();
         var invocationLog = Environment.GetEnvironmentVariable("DBBACKUP_FAKE_INVOCATION_LOG");
         if (!string.IsNullOrWhiteSpace(invocationLog))
         {
-            File.AppendAllText(invocationLog, string.Join("|", args) + Environment.NewLine);
+            File.AppendAllText(L(invocationLog), string.Join("|", args) + Environment.NewLine);
         }
 
         if (args.Length > 0 && args[0] == "--sleep")
@@ -45,7 +67,7 @@ internal static class FakeExternalTool
             si.UseShellExecute = false;
             si.CreateNoWindow = true;
             var child = System.Diagnostics.Process.Start(si);
-            File.WriteAllText(args[1], child.Id.ToString());
+            File.WriteAllText(L(args[1]), child.Id.ToString());
             System.Threading.Thread.Sleep(30000);
             return 0;
         }
@@ -53,7 +75,7 @@ internal static class FakeExternalTool
         if (args.Length > 0 && args[0] == "--encrypt")
         {
             var dest = args[Array.IndexOf(args, "--output") + 1];
-            File.Copy(args.Last(), dest);
+            File.Copy(L(args.Last()), L(dest));
             return ExitCode("DBBACKUP_FAKE_AGE_EXIT");
         }
 
@@ -64,7 +86,8 @@ internal static class FakeExternalTool
             var archivePath = args.Skip(1).First(argument => !argument.StartsWith("-"));
             var sourcePath = args.Last();
             var contentsOnly = sourcePath.EndsWith("*");
-            var sourceRoot = sourcePath.TrimEnd('*', Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var sourceRoot = L(sourcePath.TrimEnd('*', Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            archivePath = L(archivePath);
             string text;
             if (Directory.Exists(sourceRoot))
             {
@@ -73,9 +96,9 @@ internal static class FakeExternalTool
                     .Select(path => "ENTRY:" + prefix + path.Substring(sourceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Replace('\\', '/') + Environment.NewLine + File.ReadAllText(path));
                 text = string.Join(Environment.NewLine, entries);
             }
-            else if (File.Exists(sourcePath))
+            else if (File.Exists(L(sourcePath)))
             {
-                text = "ENTRY:" + Path.GetFileName(sourcePath) + Environment.NewLine + File.ReadAllText(sourcePath);
+                text = "ENTRY:" + Path.GetFileName(sourcePath) + Environment.NewLine + File.ReadAllText(L(sourcePath));
             }
             else
             {
@@ -92,8 +115,8 @@ internal static class FakeExternalTool
         if (args.Length > 0 && args[0] == "rn")
         {
             var names = args.Skip(1).Where(argument => !argument.StartsWith("-")).ToArray();
-            var renamed = File.ReadAllText(names[0]).Replace("ENTRY:" + names[1] + "/", "ENTRY:" + names[2] + "/");
-            File.WriteAllText(names[0], renamed);
+            var renamed = File.ReadAllText(L(names[0])).Replace("ENTRY:" + names[1] + "/", "ENTRY:" + names[2] + "/");
+            File.WriteAllText(L(names[0]), renamed);
             return ExitCode("DBBACKUP_FAKE_7ZIP_RENAME_EXIT");
         }
 
@@ -127,8 +150,8 @@ internal static class FakeExternalTool
             if (copyExit == 0)
             {
                 // Simulated bucket: lsjson reports what was really uploaded.
-                Directory.CreateDirectory(RemoteStore());
-                File.Copy(args[1], StoredObject(args[2]), true);
+                Directory.CreateDirectory(L(RemoteStore()));
+                File.Copy(L(args[1]), L(StoredObject(args[2])), true);
             }
             return copyExit;
         }
@@ -141,7 +164,7 @@ internal static class FakeExternalTool
             {
                 return listExit;
             }
-            var stored = StoredObject(args[1] + "/" + include);
+            var stored = L(StoredObject(args[1] + "/" + include));
             if (!File.Exists(stored))
             {
                 Console.WriteLine("[]");

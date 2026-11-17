@@ -54,7 +54,7 @@ Describe 'Monitoring operational integration' {
     BeforeAll { $script:FixtureConfig = New-DBTestFixture (Join-Path $TestDrive 'metricfixture') $script:Repo }
     BeforeEach {
         Clear-DBTestEnvironment
-        $script:Root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $script:Root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
         $null = New-Item -ItemType Directory $script:Root
         Copy-Item (Split-Path $script:FixtureConfig) (Join-Path $script:Root 'instance') -Recurse
         $script:Config = Join-Path $script:Root 'instance/config.psd1'

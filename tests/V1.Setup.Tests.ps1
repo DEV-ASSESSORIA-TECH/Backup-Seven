@@ -74,7 +74,7 @@ Describe 'DBBackup task identity and reconciliation' {
 }
 Describe 'Unified setup and secrets' {
     BeforeEach {
-        $script:Instances=Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $script:Instances=Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
         $script:Config=Join-Path $script:Instances 'MySQL/config.psd1'
         Mock Set-Acl {} -ModuleName Runtime
         Mock Set-Acl {} -ModuleName Setup

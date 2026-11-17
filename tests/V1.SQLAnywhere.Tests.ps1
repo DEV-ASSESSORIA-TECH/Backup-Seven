@@ -5,7 +5,7 @@ BeforeAll {
 }
 Describe 'SQL Anywhere safe full-backup provider' {
     BeforeEach {
-        $script:Root=Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $script:Root=Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
         $null=New-Item -ItemType Directory $script:Root
         $script:Options=Join-Path $script:Root 'connection.options'
         Set-Content $script:Options '-c "UID=''backup'';PWD=''test-secret'';HOST=''192.0.2.1:2638'';DBN=''demo''"'
