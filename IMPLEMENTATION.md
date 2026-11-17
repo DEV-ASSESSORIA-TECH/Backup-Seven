@@ -1,37 +1,41 @@
-# v1 implementation ledger
+# Implementação DBBackup v1.0.0
 
-Branch: release/1.0.0. Breaking replacement of the 0.x interfaces.
+Branch: `release/1.0.0`. Configuração, entradas e artefatos incompatíveis com 0.x.
 
-1. docs: define DBBackup v1 scope and contracts
-2. refactor!: introduce instance-based DBBackup core
-3. refactor!: extract MySQL and directory providers
-4. feat: add mandatory age encryption and artifact state
-5. feat: add SQL Anywhere 17 full backups
-6. feat!: unify setup secrets and task scheduling
+| Etapa | Commit / entrega |
+| --- | --- |
+| 1 | `7908558` — contratos e escopo v1. |
+| 2 | `0c59447` — núcleo por instância. |
+| 3 | `cbfec41` — provedores MySQL e diretórios. |
+| 4 | `332ef6d` — 7z + age obrigatório e estado dos artefatos. |
+| 5 | `3b442b2` — backup completo SQL Anywhere 17. |
+| 6 | `fecd24e` — setup, secrets e agendamento comuns. |
+| 7 | Excluída pelo usuário: recovery preparation. |
+| 8 | `3ee7d0f` — métricas, timeouts, checks de espaço e nenhum motor local adicional. |
+| 9 | `17ea6eb` — pacote genérico, manifest/checksum e workflow manual. |
+| 10 | Documentação final de operação, migração e fronteira do recovery. |
+| 11 | VERSION/changelog 1.0.0, verificação final e pacote local. |
 
-Stop after step 6 for recovery-design discussion. Steps 7–11 (recovery tooling,
-metrics/limits, packaging, final operations documentation, VERSION/release) are
-not included in this implementation request. Each functional commit includes
-targeted tests. Real database recovery is neither performed nor claimed here.
+## Decisão de recovery
 
-## Delivered through step 6
+Por solicitação do usuário, restauração e validação do banco são um processo
+externo ao projeto. Não há Restore.ps1, tarefas de recovery, VM provisionada,
+identidade age privada ou banco de ensaio iniciado pelo runtime/CI. A validação
+local com dbvalid/dbeng introduzida inicialmente na etapa 5 foi removida na etapa
+8 para impedir uma segunda instância no servidor de produção. Essa limitação é
+explícita no manifesto e no runbook; sucesso de backup não certifica restauração.
 
-- Instance schema, paths, isolation, lock and generic entry point.
-- MySQL full/degraded and independent directory jobs.
-- Mandatory age after tested 7z; bundle manifest/state, immutable retry and retention.
-- Native SQL Anywhere full-backup and copied-file validation provider.
-- Shared interactive setup, secrets protection/preservation, local diagnosis,
-  read-only scheduler plans and ownership-scoped task reconciliation.
-- Generic services retained under Core; obsolete entry points/tests retired.
-- CI validates development source; packaging/release deliberately blocked until
-  their separately scoped implementation and real recovery qualification.
+## Verificações
 
-Tests use temporary fixtures, simulated native tools and mocked ACL/scheduler
-mutations. No production connection, actual recovery or installed task change
-was used for implementation verification. Native age and SQL Anywhere response-
-file interoperability still requires the agreed real-environment qualification.
+Até a etapa 6: 60 testes, parsing e análise estática aprovados. Na etapa 8: 71
+testes aprovados, incluindo timeout com filho nativo simulado, persistência de
+métricas, deadlines, indisponibilidade do Alloy e falta de espaço. Etapa 9: cinco
+testes adicionais de checksum, conteúdo permitido, integridade do manifest,
+launchers e importação do pacote extraído. A verificação final da etapa 11 reúne
+a suíte completa e recompila o pacote com VERSION=1.0.0.
 
-Verification on 2026-11-17: 60 Pester tests passed, zero failures/skips;
-30 PowerShell source/configuration files parsed; PSScriptAnalyzer reported no
-warnings/errors; git diff --check passed. The same-volume transition check and
-generic directory execution are covered by the final complete test run.
+Bancos e S3 são simulados; ACL e aplicação de tarefas são mockados. Não foram
+feitas conexões à produção, mudanças em tarefas instaladas ou recuperação real.
+Compatibilidade operacional dos binários nativos no ambiente final não é
+certificada pelos testes simulados. Publicação remota/tag e instalação são ações
+separadas; o workflow manual está preparado, mas não é disparado pela implementação.

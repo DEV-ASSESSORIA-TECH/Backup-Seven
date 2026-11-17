@@ -1,60 +1,134 @@
-# DBBackup development runbook — steps 1–6
+# DBBackup — runbook v1.0.0
 
-This is a development snapshot, not the 1.0.0 release. No recovery command or
-production migration is delivered yet. The historical 0.x changelog remains as
-release history. Do not extract this branch over an existing backup installation.
+## Dependências e instalação
 
-## Requirements
+Windows e PowerShell 7.2+; 7-Zip, age e rclone instalados separadamente. MySQL
+precisa mysql/mysqldump 5.x compatíveis com a origem. SQL Anywhere precisa somente
+dbbackup 17 e suas bibliotecas nativas; não é necessário instalar um motor de
+restauração no servidor. O DBBackup não instala essas dependências.
 
-Windows, PowerShell 7, 7-Zip, age and rclone are external dependencies. MySQL jobs
-need compatible mysql/mysqldump 5.x clients. SQL Anywhere jobs need SAP 17 dbbackup,
-dbvalid and dbeng17, including their native runtime dependencies. No third-party
-binaries or private age identities are bundled.
-
-## Create and configure an instance
-
-Use an elevated PowerShell 7 session and the source folder:
+1. Confira o SHA-256 do ZIP contra o `.zip.sha256` recebido por canal confiável.
+2. Extraia em pasta nova, por exemplo `C:\TI\Scripts\DBBackup`.
+3. Abra PowerShell elevado nessa pasta e execute o setup por instância:
 
 ```powershell
 .\Setup.ps1 -Provider MySQL -InstanceName MySQL
 .\Setup.ps1 -Provider SQLAnywhere -InstanceName SQLAnywhere
 ```
 
-Setup creates `Instances/<name>/config.psd1` from the selected template, asks for
-paths/database/storage values and creates missing credentials. Existing secrets
-are never overwritten. The shared batch launchers request elevation and then
-ask interactively for provider/instance or an existing configuration path.
+Também há `Setup.bat` e `Aplicar-Configuracao.bat`, que solicitam elevação e
+perguntam a instância/configuração interativamente. O ZIP não contém configurações
+operacionais: apenas os modelos `Templates/<provedor>/config.example.psd1`.
 
-Secrets use native plaintext option files protected by NTFS ACLs for SYSTEM and
-Administrators. They are not encrypted vaults. Keep server access restricted.
-The MySQL file is `[client]` with host, port, user and password. SQL options must
-be exactly one line, for example (placeholders must be replaced):
+```text
+DBBackup/
+  Backup.ps1, Setup.ps1, Diagnose.ps1
+  Modules/, Templates/, VERSION
+  Instances/
+    MySQL/
+      config.psd1, Secrets/, Runtime/, Completed/, Logs/
+    SQLAnywhere/
+      config.psd1, Secrets/, Runtime/, Completed/, Logs/
+```
+
+## Configuração e credenciais
+
+O setup pergunta caminhos das ferramentas, banco e destino rclone. Cria somente
+secrets ausentes; nunca substitui credenciais existentes. Para alterá-las, edite
+os arquivos privados e reaplique a configuração. Todo arquivo de credenciais deve
+ficar dentro de Secrets da própria instância. Os arquivos não são um cofre
+criptografado: contêm opções nativas protegidas por ACL NTFS para SYSTEM e
+Administradores. Não os inclua em relatórios ou no repositório.
+
+MySQL usa `Secrets/mysql.cnf`, seção `[client]`, com host, port, user e password.
+O padrão `--skip-events` significa que eventos MySQL não estão no dump; mudar
+isso exige permissão correspondente e homologação externa. O setup não cria
+usuários nem concede privilégios nos bancos.
+
+SQL Anywhere usa `Secrets/sqlanywhere.options`, uma linha (substitua os valores):
 
 ```text
 -c "UID='REPLACE_USER';PWD='REPLACE_PASSWORD';HOST='REPLACE_HOST:2638';DBN='REPLACE_DATABASE'"
 ```
 
-SQL connection values cannot contain double quotes or newlines. Single quotes
-inside values are doubled. DSN and startup overrides are rejected. SQLAnywhere
-v1 requires one main .db file and at least one .log from the native full backup.
-No log rename/truncate flags are used. In-memory copied-backup validation uses
-fresh private response files; it is not proof of end-to-end restoration.
+UID, PWD, HOST e DBN são obrigatórios; DBN corresponde a Database.Name. SERVER e
+CHARSET são opcionais. DSN, parâmetros de startup e flags de truncagem/rotação
+não são aceitos nesse arquivo. Valores não podem conter aspas duplas ou quebras
+de linha; aspas simples internas são duplicadas. É esperado um .db principal e
+pelo menos um .log não vazio. A rotina não abre a cópia do banco.
 
-`Secrets/rclone.conf` is private and local to the instance. `recipients.txt`
-contains one native age PUBLIC recipient per line; comments are allowed. Keep
-private decryption keys outside this server and preserve the identities needed
-for historical backups after recipient rotation. Changing recipients affects
-new artifacts only; retry never re-encrypts an old artifact.
+S3 usa `Secrets/rclone.conf`; o destino tem forma `remote:bucket/prefix`.
+O fluxo usa copyto e check por arquivo, sem sync ou remoção remota e sem exigir
+listagem do bucket. Configurar um remote não comprova acesso ao bucket. Mantenha
+os remotes antigos enquanto houver pendências que os referenciem.
 
-Edit configuration to add independent directory jobs:
+`Secrets/recipients.txt` contém um destinatário age público nativo por linha;
+comentários iniciados por # são aceitos. Identidades privadas ficam no cofre ou
+no processo externo de recuperação. Alterar destinatários afeta somente novos
+pacotes; guarde as identidades necessárias aos antigos. O projeto não cria nem
+usa chaves de ensaio/recuperação no servidor.
+
+## Trabalhos, limites e monitoramento
+
+Cada instância tem um trabalho `database`, sempre completo. Diretórios adicionais
+são opcionais e independentes:
 
 ```powershell
-Directories = @(@{ Id = 'documents'; SourcePath = 'D:\Documents' })
+Directories = @(@{ Id='documents'; SourcePath='D:\Documents' })
+Execution = @{
+    ToolTimeoutSeconds = 21600
+    ReserveBytes = 1073741824
+    EstimatedDatabaseBytes = 0
+}
 ```
 
-Sources cannot overlap the instance or its state. Linked files/directories are
-rejected. Copying live directories is not an application-consistent snapshot.
-Each schedule task references a job explicitly:
+Fontes não podem incluir a instância ou seus diretórios operacionais. Links são
+rejeitados. Diretórios vivos não têm consistência de snapshot. Configure a
+estimativa do banco conforme seu tamanho esperado: zero verifica só a reserva,
+pois o produtor não consulta o tamanho remoto. Antes do 7z e do age, usa-se o
+tamanho já conhecido, margem de 5%, 1 MiB e reserva. Não há reserva exclusiva de
+disco; outros processos e crescimento dos dados podem consumir o espaço.
+
+Cada processo externo tem timeout próprio (padrão 6 horas); expiração encerra sua
+árvore. A tarefa agendada tem limite total independente de 12 horas. Esses
+limites não tornam um backup interrompido válido; a próxima execução tenta as
+pendências já completas, não arquivos parciais de Work.
+
+```powershell
+Monitoring = @{
+    Enabled = $true
+    Service = 'erp'
+    TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup'
+    BackupIds = @{ database='mysql-database'; documents='documents' }
+    Criticality = @{ database='alta'; documents='baixa' }
+}
+```
+
+Service é o sistema protegido, não MySQL/SQLAnywhere ou DBBackup. BackupIds são
+estáveis por conjunto; o padrão omitido é `<instância>-<trabalho>` em minúsculas.
+Evite reutilizar a identidade para outros dados. O setup verifica colisões entre
+instâncias da mesma raiz. ExpectedIntervalHours pode substituir o intervalo da
+agenda por trabalho. Alloy cria sua pasta; DBBackup nunca a cria. SYSTEM escreve
+nela; outra conta precisa das permissões do Alloy Backup Writers.
+
+Arquivos `<service>__<backup_id>.prom` seguem o contrato genérico Grafana. Último
+sucesso considera somente FULL normal confirmado, no ponto de recuperação
+original. Pacotes degradados não avançam sucesso. O checkpoint privado em
+Runtime/Monitoring conserva esse histórico após retenção ou falta da pasta Alloy.
+Falha de métricas apenas avisa no log. Não apague checkpoints durante atualização.
+
+## Diagnosticar, planejar e aplicar agenda
+
+```powershell
+.\Diagnose.ps1 -ConfigPath .\Instances\MySQL\config.psd1
+.\Setup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Plan
+.\Setup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Apply
+```
+
+Use `-InstancesRoot` consistentemente se as configurações estiverem fora da raiz
+padrão. Diagnose é local: configuração, ACL, arquivos, ferramentas, espaço e
+remotes declarados. Não conecta ao banco, não testa recuperação e não grava.
+Plan também não cria diretórios, altera ACL ou aplica tarefas.
 
 ```powershell
 Schedule = @{ Tasks = @(
@@ -63,59 +137,73 @@ Schedule = @{ Tasks = @(
 ) }
 ```
 
-## Diagnose and apply
+Há agenda diária, semanal e mensal (DaysOfMonth 1..31 ou Last). Cada tarefa usa
+trabalho explícito e roda como SYSTEM em `\DBBackup\<instância>\`. Apply mostra o
+plano e exige SIM. Tarefas de outra configuração causam conflito. Sem Schedule,
+a agenda é ignorada; Tasks vazio remove somente as tarefas próprias. Tarefas da
+mesma instância no mesmo horário disputam o lock; escolha horários distintos ou
+execute `-All` manualmente. Antes de remover um trabalho, resolva suas pendências
+e aposente seu arquivo .prom deliberadamente.
 
-```powershell
-.\Diagnose.ps1 -ConfigPath .\Instances\MySQL\config.psd1
-.\Setup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Plan
-.\Setup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Apply
-```
-
-Use `-InstancesRoot` consistently when configurations live outside the default
-Instances directory. All configurations under that root are checked for duplicate
-identities and overlapping state. Diagnostics are local/read-only; rclone
-listremotes reads configuration, not remote data. It does not prove database
-permissions or AWS connectivity. Plan is read-only, including ACLs and directories.
-
-Apply protects existing config/secrets, checks local dependencies and creates
-private state roots. It displays scheduler changes and requires `SIM` before
-registration/deletion. Tasks run as SYSTEM in `\DBBackup\<name>\`, with explicit
-absolute config and job arguments. Missing Schedule leaves tasks unmanaged;
-empty Tasks removes only tasks owned by that config. Foreign tasks cause a
-conflict. Old installations' tasks are never searched for or removed.
-
-## Manual development execution
+## Execução e interpretação
 
 ```powershell
 .\Backup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Job database
 .\Backup.ps1 -ConfigPath .\Instances\SQLAnywhere\config.psd1 -All
 ```
 
-Run only against an explicitly selected test environment until qualification.
-One instance has one lock; other instances can execute simultaneously. Runtime
-and Completed must be on the same volume for atomic state transitions. Pending
-bundles survive publication failures and bypass age retention. Completed bundles
-are deleted with their metadata after CompletedDays. LocalStatus can be degraded
-or failed even when transport is confirmed. Logs are sanitized and uploaded as
-operational text; backup payloads always use .7z.age.
+Cada instância tem um lock; outras podem rodar simultaneamente. A falha de um
+trabalho não impede os demais. O banco/log, dump e 7z ficam sem criptografia em
+Work durante a execução, sob ACL privada. Em término normal, Work é limpo; após
+interrupção, inspecione Work/Staging com a instância parada. Apagar não equivale
+a apagamento seguro. Nunca limpe Pending automaticamente para liberar espaço.
 
-Remote comparison uses rclone check's best common hash, or size if no compatible
-hash is available. It is not a download/decryption or restoration exercise.
+Pending guarda o pacote criptografado e state.json; reenvia os mesmos bytes ao
+destino registrado, mesmo que a configuração tenha mudado. Completed indica
+transporte confirmado e é sujeito à retenção local por idade; o registro pode
+continuar marcado DEGRADED/FAILED. Logs operacionais são sanitizados e enviados
+como texto separado. Retenção remota é responsabilidade do bucket.
 
-Work contains unencrypted material during production. Normal completion cleans
-that run's work; an interrupted process can leave private temporary files. Inspect
-stale Work/Staging only while the instance is stopped. Never delete Pending to
-free space. Secure erasure is not promised. Process timeouts, automated space
-checks, metrics publication and recovery procedures are pending later steps.
+`rclone check` compara tamanho e o melhor hash comum; sem hash compatível, a
+conferência pode limitar-se ao tamanho. Nem esse check, nem o teste 7z, comprovam
+recuperação do banco. SQL Anywhere não executa dbvalid/dbeng/dbsrv. Seu sucesso
+significa saída nativa normal, arquivos esperados não vazios, pacote testado,
+criptografia concluída e publicação confirmada. Recovery é externo ao projeto,
+sem hook, tarefa automática, chave privada ou instância local de teste.
 
-Exit codes: 0 success; 1 operational failure; 2 invalid config/dependency; 3 busy
-lock; 4 maintenance failure; 5 complete degraded MySQL fallback published.
+| Código | Significado |
+| --- | --- |
+| 0 | Trabalhos, reenvios e manutenção concluídos. |
+| 1 | Falha operacional, publicação, criptografia ou verificação. |
+| 2 | Configuração, dependência ou inicialização inválida. |
+| 3 | Lock ocupado; não publica tentativa falha nas métricas. |
+| 4 | Backup concluído, mas limpeza/retenção falhou. |
+| 5 | Os dois pacotes do fallback MySQL foram publicados como degradados. |
 
-## Development verification and qualification
+## Atualização e migração
 
-`../scripts/verify.ps1` runs parsing, static analysis and Pester with simulated
-external tools. Scheduler/ACL mutations are mocked. This is not a restoration
-exercise and does not validate native age/SAP interoperability. Packaging and
-release workflows intentionally stop until the separately scoped release work.
-Real restore tests and their design will be agreed next; no production migration,
-legacy task disablement, release or tag is performed by this implementation.
+Da linha 0.x para v1: instale em outra pasta, configure secrets/destinatários e
+novas identidades. Os archives/configurações antigos não são importados. Preserve
+pendências antigas e o histórico; a nova rotina não os envia nem os remove.
+Desative tarefas antigas somente numa transição deliberada, quando a nova rotina
+estiver conferida. O setup não modifica a instalação antiga ou suas tarefas.
+Aposente métricas antigas somente ao aposentar o backup correspondente.
+
+Entre versões v1: pare os trabalhos de todas as instâncias que compartilham o
+código, confira o checksum do pacote e atualize os arquivos distribuídos. Preserve
+Instances e quaisquer caminhos operacionais externos. Reaplique a configuração
+se necessário. Não execute setup/backup enquanto substitui os módulos. Nenhuma
+migração ou atualização da produção é efetuada pelo build ou release.
+
+## Build e release
+
+`./scripts/verify.ps1` executa parsing, PSScriptAnalyzer e Pester com ferramentas
+simuladas. `./scripts/package.ps1` gera ZIP, manifest de arquivos e SHA-256 em
+dist. O workflow manual Release repete os checks, recusa versões já publicadas e
+vincula a release ao commit verificado. Disparar o workflow é uma ação separada;
+nenhuma publicação é realizada apenas por desenvolver esta branch.
+
+Os testes entregues não acessam bancos/S3 reais e não certificam compatibilidade
+nativa age/SAP/MySQL no ambiente do cliente. Restauração e validação de banco
+seguem como processo externo independente; não são executadas no CI ou servidor
+como parte do DBBackup.

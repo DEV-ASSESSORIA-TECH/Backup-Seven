@@ -1,39 +1,60 @@
-# DBBackup architecture
+# Arquitetura DBBackup v1
 
-The public entry point selects an explicit config and one job or all jobs.
-Configuration paths resolve against the instance directory. Shared PowerShell
-modules contain no instance credentials or mutable per-instance global state.
+## Núcleo compartilhado, estado por instância
 
-The core validates configuration and selected dependencies, acquires the
-instance lock, retries selected pending jobs, produces each job independently,
-packages/encrypts its results, publishes them and applies local retention. A job
-failure does not stop the other selected jobs. A pending retry failure remains
-an execution failure even when a new package succeeds.
+`Backup.ps1` exige uma configuração e um trabalho (`-Job`) ou todos (`-All`).
+A configuração schema 1 resolve caminhos relativos a sua própria pasta. O núcleo
+controla lock, tentativas, processos, compactação/criptografia, publicação,
+retenção, métricas e código de saída. Os provedores retornam resultados e
+conteúdos; não fazem upload nem declaram sucesso remoto.
 
-Providers produce typed result objects without uploading. MySQL owns normal,
-forced and granular dumps. SQL Anywhere owns native database/log backup and
-in-memory validation of the local copy. Directory stages a live file copy;
-it provides no snapshot or cross-file consistency guarantee.
+MySQL mantém sua estratégia de dump normal, `--force` e granular por objeto.
+Uma falha pode produzir conteúdo aproveitável e continuar com resultado FAILED;
+DEGRADED exige os dois papéis publicados e nunca conta como último sucesso.
+Directory faz uma cópia de arquivos vivos; não oferece snapshot consistente entre
+arquivos. SQLAnywhere chama somente dbbackup, com ASTART=NO, contra o servidor
+existente: não executa dbvalid, dbeng ou dbsrv. Abertura, recuperação e validação
+do banco ficam fora deste produto.
 
-Each result package gets its own manifest, tested 7z and age-encrypted payload.
-Promotion of payload plus state into Pending uses a same-volume directory move.
-Pending bundles carry the immutable destination and encrypted hash. Completed
-records confirmed transport, while LocalStatus preserves SUCCESS/DEGRADED/FAILED.
-Runtime and Completed must share a volume; promotion to Completed is also an
-atomic directory move, so payload and state cannot split during a partial copy.
+## Artefatos e publicação
 
-Setup creates isolated config/Secrets and reconciles tasks scoped by instance
-and canonical config-path ownership. Local diagnostics do not test remote SQL
-permissions, remote bucket access or recoverability. Scheduled tasks run as
-SYSTEM; setup/backup runs require sufficient NTFS privileges.
+Cada pacote contém manifesto schema 1, versão do produtor, ferramentas, resultado,
+metadados e inventário de arquivos/tamanhos/SHA-256. O 7z é testado antes do age.
+O servidor usa destinatários públicos, nunca identidades privadas. A criptografia
+é promovida junto ao state.json de uma área de staging para Pending por rename
+atômico. Runtime e Completed precisam estar no mesmo volume.
 
-Do not share a live code directory across independently upgraded releases:
-changing shared code affects the next run of all instances using that directory.
-Updates should occur with all instance jobs stopped, using a separate qualified
-release directory and deliberate task reapplication. Per-instance logs, secrets
-and runtime are never part of a distribution package.
+O registro mantém hash/tamanho do ciphertext e destino remoto originais. Reenvio
+não renomeia, recriptografa ou redireciona um pacote antigo. Somente após copyto e
+check o conjunto é movido atomicamente a Completed. O transporte CONFIRMED e o
+resultado local SUCCESS/DEGRADED/FAILED são dimensões separadas. Pendências nunca
+são removidas por idade. A retenção exclui pacotes concluídos com seus registros.
 
-Detailed schemas and invariants are in contracts/v1.md. The generic metric
-formatter is retained for later integration, but this snapshot does not publish
-metrics. Native process timeouts and space checks are also later integration
-work; this snapshot must not be installed unattended in production.
+## Processos, capacidade e observabilidade
+
+Um executor comum captura stderr e drena stdout de forma assíncrona; dumps são
+transmitidos diretamente ao arquivo. Timeout encerra a árvore do processo. As
+estimativas de espaço e a reserva são conferidas antes das etapas maiores, sem
+reservar espaço contra outros processos ou prometer caber um banco que cresceu.
+Tarefas têm também limite total de 12 horas.
+
+O monitoramento observa pacotes normais confirmados, preserva o último sucesso
+em checkpoint privado antes da retenção e grava o contrato Alloy atomicamente.
+`service` identifica a aplicação protegida; `backup_id`, o conjunto de dados.
+Erros de métricas são avisos e não modificam o resultado do backup. Lock ocupado
+não é tentativa e não regrava métricas. O prazo é ancorado no último sucesso,
+sem avançar a cada falha. A pasta de métricas pertence ao Alloy.
+
+## Setup, segurança e atualização
+
+Setup aplica configurações/ACLs e reconcilia somente tarefas com a identidade do
+caminho de configuração da instância. Plan é somente leitura. Controles impedem
+sobreposição de estado/Secrets e identidades de métricas entre instâncias sob a
+mesma raiz. Credenciais nativas em texto ficam em diretórios/arquivos privados,
+restritos a SYSTEM e Administradores; não entram nos argumentos dos processos.
+
+Alterar código compartilhado afeta a próxima execução de todas as instâncias que
+o usam. Atualize com os trabalhos parados e preserve o estado operacional.
+A distribuição é uma lista explícita de fontes e modelos, com manifest/checksum.
+A linha 0.x não é importada ou desativada automaticamente. Recovery e testes de
+restauração não integram runtime, setup, agendador ou workflow de release.
