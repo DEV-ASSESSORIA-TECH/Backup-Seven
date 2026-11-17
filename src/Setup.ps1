@@ -1,4 +1,4 @@
-#requires -Version 7.0
+#requires -Version 7.2
 [CmdletBinding()]
 param([string] $ConfigPath, [ValidateSet('MySQL','SQLAnywhere')][string] $Provider,
     [string] $InstanceName, [string] $InstancesRoot = (Join-Path $PSScriptRoot 'Instances'),

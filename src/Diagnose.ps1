@@ -1,4 +1,4 @@
-#requires -Version 7.0
+#requires -Version 7.2
 [CmdletBinding()]
 param([Parameter(Mandatory)][string] $ConfigPath, [string] $InstancesRoot = (Join-Path $PSScriptRoot 'Instances'))
 Set-StrictMode -Version Latest

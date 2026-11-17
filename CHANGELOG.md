@@ -4,30 +4,41 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
-## [Unreleased] — desenvolvimento da v1.0.0, passos 1–6
+## [1.0.0] - 2026-11-17
 
-### Alterado (incompatível)
+### Alterado — incompatível com a linha 0.x
 
-- Aplicação genérica DBBackup, com configuração schema 1 e instâncias isoladas.
-- Núcleo compartilhado e provedores MySQL 5, SQL Anywhere 17 e diretórios.
-- Entradas, setup, secrets e agendamento comuns; tarefas identificadas por
-  instância e pelo caminho canônico de sua configuração.
-- Removidas as entradas/configurações antigas do Seven. Não há migração
-  automática dos artefatos ou tarefas da linha 0.x.
+- Produto DBBackup, com entradas genéricas e configuração schema 1.
+- Código compartilhado e estado isolado por instância; removida a identidade
+  fixa do Seven em scripts, setup, arquivos e tarefas agendadas.
+- Modos legados substituídos por trabalhos explícitos e `-All`. Configurações,
+  pendências e archives 0.x não são importados automaticamente.
 
 ### Adicionado
 
-- Pipeline obrigatório 7z + age, manifesto, estado de artefatos, promoção
-  atômica para Pending e reenvio com destino/hash preservados.
-- SQL Anywhere completo sem rotação/truncagem, com validação da cópia local
-  e conferência de que os arquivos copiados não foram modificados.
-- Diagnóstico local e planejamento de tarefas sem gravações; proteção dos
-  arquivos de configuração/credenciais por ACL e preservação de secrets existentes.
-- Verificação por parsing, PSScriptAnalyzer e Pester com ferramentas simuladas.
+- Provedores MySQL 5 (dump normal e fallback geral/granular), SQL Anywhere 17
+  (completo nativo de banco/log sem rotação/truncagem) e diretórios opcionais.
+- Pipeline 7z testado + age obrigatório, destinatários públicos, manifest com
+  hashes/versões, estado de transporte e promoção atômica de bundles.
+- Reenvio preservando bytes/destino, retenção local e logs sanitizados.
+- Setup e secrets compartilhados como mecanismo, arquivos privados por instância,
+  diagnóstico local e reconciliação de tarefas com identidade de configuração.
+- Métricas Grafana Alloy no contrato genérico v0.3.0, checkpoint de último
+  sucesso, deadline por agenda e identificação de publicação degradada.
+- Timeout por ferramenta com encerramento da árvore, streaming do dump e
+  verificações de espaço/reserva antes das etapas maiores.
+- Pacote DBBackup com lista explícita, manifest interno, SHA-256 e workflow
+  manual de release que verifica o commit antes de publicar.
 
-Esta entrega para no passo 6. Recovery, homologação real, integração de métricas,
-limites de processos, empacotamento e release permanecem pendentes. VERSION não
-foi elevado e nenhuma tag/release foi criada. O histórico 0.x abaixo é preservado.
+### Fronteira operacional
+
+- Recovery preparation foi excluído por solicitação do usuário. Restauração,
+  descriptografia de ensaio e validação de banco são processos externos.
+- Não há motor local de recovery/validação iniciado pelo DBBackup; SQL Anywhere
+  usa somente dbbackup, não dbvalid/dbeng/dbsrv.
+- Sucesso não certifica restauração. Os testes de banco/S3/criptografia usam
+  simuladores; nenhuma homologação em produção ou recuperação real é declarada.
+- Build local não publica release/tag nem instala ou altera tarefas existentes.
 
 ## [0.6.0] - 2026-11-16
 

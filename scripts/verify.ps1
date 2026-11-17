@@ -1,8 +1,11 @@
-#requires -Version 7.0
+#requires -Version 7.2
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$version = (Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw).Trim()
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'VERSION must be X.Y.Z.' }
+if (-not (Select-String -LiteralPath (Join-Path $root 'CHANGELOG.md') -Pattern "^## \[$([regex]::Escape($version))\]" -Quiet)) { throw 'CHANGELOG release entry is missing.' }
 $parseFailed = $false
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root 'src'), (Join-Path $root 'scripts'), (Join-Path $root 'tests') -Recurse -File -Include *.ps1,*.psm1,*.psd1) {
     $tokens = $null
