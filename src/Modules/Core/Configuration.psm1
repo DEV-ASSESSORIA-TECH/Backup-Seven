@@ -96,6 +96,39 @@ function Read-DBConfiguration {
         $jobs += [pscustomobject]@{ Id = [string] $entry.Id; Provider = 'Directory'; SourcePath = $source }
     }
     $c.Jobs = $jobs
+    if (-not $c.Contains('Execution')) { $c.Execution = @{} }
+    if ($c.Execution -isnot [Collections.IDictionary]) { throw 'Execution must be a hashtable.' }
+    $defaults = @{ToolTimeoutSeconds=21600;ReserveBytes=1073741824;EstimatedDatabaseBytes=0}
+    foreach ($key in $defaults.Keys) {
+        if (-not $c.Execution.Contains($key)) { $c.Execution[$key] = $defaults[$key] }
+        [long] $number = 0
+        if (-not [long]::TryParse([string] $c.Execution[$key], [ref] $number) -or $number -lt 0) { throw "Invalid Execution.$key" }
+    }
+    if ($c.Execution.ToolTimeoutSeconds -notin 1..86400) { throw 'ToolTimeoutSeconds must be 1..86400.' }
+    if (-not $c.Contains('Monitoring')) { $c.Monitoring = @{Enabled=$false} }
+    if ($c.Monitoring -isnot [Collections.IDictionary] -or -not $c.Monitoring.Contains('Enabled') -or $c.Monitoring.Enabled -isnot [bool]) { throw 'Monitoring.Enabled must be boolean.' }
+    if ($c.Monitoring.Enabled) {
+        if ([string] $c.Monitoring.Service -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$') { throw 'Monitoring.Service must identify the protected service in lowercase.' }
+        $c.Monitoring.TextfileDirectory = Resolve-DBPath ([string] $c.Monitoring.TextfileDirectory) $base
+        foreach ($map in @('BackupIds','Criticality','ExpectedIntervalHours')) {
+            if (-not $c.Monitoring.Contains($map)) { $c.Monitoring[$map] = @{} }
+            if ($c.Monitoring[$map] -isnot [Collections.IDictionary]) { throw "Monitoring.$map must be a hashtable." }
+            foreach ($id in $c.Monitoring[$map].Keys) { if ($id -cnotin @($jobs.Id)) { throw "Unknown monitoring job: $id" } }
+        }
+        $metricIds = @{}
+        foreach ($j in $jobs) {
+            if (-not $c.Monitoring.BackupIds.Contains($j.Id)) { $c.Monitoring.BackupIds[$j.Id] = "$($c.InstanceName.ToLowerInvariant())-$($j.Id.ToLowerInvariant())" }
+            $id = [string] $c.Monitoring.BackupIds[$j.Id]
+            if ($id -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$' -or $metricIds.ContainsKey($id)) { throw 'Invalid or duplicate Monitoring.BackupIds.' }
+            $metricIds[$id] = $true
+            if (-not $c.Monitoring.Criticality.Contains($j.Id)) { $c.Monitoring.Criticality[$j.Id] = 'alta' }
+            if ($c.Monitoring.Criticality[$j.Id] -cnotin @('alta','baixa')) { throw 'Monitoring.Criticality must be alta or baixa.' }
+            if ($c.Monitoring.ExpectedIntervalHours.Contains($j.Id)) {
+                [double] $hours = 0
+                if (-not [double]::TryParse([string] $c.Monitoring.ExpectedIntervalHours[$j.Id], [ref] $hours) -or -not [double]::IsFinite($hours) -or $hours -le 0) { throw 'ExpectedIntervalHours must be positive and finite.' }
+            }
+        }
+    }
     return $c
 }
 
@@ -106,6 +139,11 @@ function Assert-DBInstanceIsolation {
         if ($file.FullName -eq $Configuration.ConfigPath) { continue }
         $other = Read-DBConfiguration $file.FullName
         if ($other.InstanceName -eq $Configuration.InstanceName) { throw "Duplicate InstanceName: $($other.InstanceName)" }
+        if ($Configuration.Monitoring.Enabled -and $other.Monitoring.Enabled -and $Configuration.Monitoring.Service -ceq $other.Monitoring.Service) {
+            foreach ($id in $Configuration.Monitoring.BackupIds.Values) {
+                if ($id -cin @($other.Monitoring.BackupIds.Values)) { throw 'Instances have duplicate monitoring identities on this host.' }
+            }
+        }
         foreach ($a in @($Configuration.InstanceRoot, $Configuration.SecretsRoot) + @($Configuration.Paths.Values)) {
             foreach ($b in @($other.InstanceRoot, $other.SecretsRoot) + @($other.Paths.Values)) {
                 if ((Test-DBPathWithin $a $b) -or (Test-DBPathWithin $b $a)) { throw 'Instances share configuration or secret directories.' }

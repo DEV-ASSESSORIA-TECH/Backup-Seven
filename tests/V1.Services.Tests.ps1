@@ -25,10 +25,10 @@ BeforeAll {
     Set-Content -LiteralPath $script:DefaultsFile -Value "[client]`nuser=test"
     Set-Content -LiteralPath $script:RcloneConfig -Value "[s3]`ntype=s3"
 
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Archive.psm1') -Force
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Providers/MySQL/Client.psm1') -Force
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Storage.psm1') -Force
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Monitoring.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Archive.psm1')
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Providers/MySQL/Client.psm1')
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Storage.psm1')
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Monitoring.psm1')
 }
 
 AfterAll {

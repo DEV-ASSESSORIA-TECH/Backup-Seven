@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'Configuration.psm1')
 Import-Module (Join-Path $PSScriptRoot 'Runtime.psm1')
+Import-Module (Join-Path $PSScriptRoot 'Observation.psm1')
+Import-Module (Join-Path $PSScriptRoot 'Capacity.psm1')
 
 function Invoke-DBBackup {
     param([string] $ConfigPath, [string] $Job, [switch] $All)
@@ -16,22 +18,30 @@ function Invoke-DBBackup {
         }
         Import-Module $providerDispatcher
         Import-Module $artifacts
-        Assert-DBBackupDependency -Configuration $c -Jobs $jobs
     }
     catch { Write-Error (Protect-DBMessage $_.Exception.Message) -ErrorAction Continue; return 2 }
     $runtime = $null
     $exitCode = 1
+    $ready = $false
+    $monitored = [Collections.Generic.HashSet[string]]::new()
+    $runWatch = [Diagnostics.Stopwatch]::StartNew()
     try {
         $runtime = New-DBRuntime $c
         if ($null -eq $runtime) { return 3 }
         Write-DBLog $runtime.LogPath 'Startup' "DBBackup instance $($c.InstanceName); run $($runtime.RunId)."
+        Assert-DBBackupDependency -Configuration $c -Jobs $jobs
+        $ready = $true
         $failed = $false
         $degraded = $false
         foreach ($j in $jobs) {
             if (-not (Invoke-DBPendingRetry -Configuration $c -Runtime $runtime -Job $j.Id)) { $failed = $true }
         }
         foreach ($j in $jobs) {
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $jobStatus = 'FAILED'
             try {
+                $estimate = if ($j.Provider -eq 'Directory') { Get-DBDirectorySize $j.SourcePath } else { $c.Execution.EstimatedDatabaseBytes }
+                Assert-DBFreeSpace -Path $runtime.Work -RequiredBytes $estimate -ReserveBytes $c.Execution.ReserveBytes
                 $result = Invoke-DBProvider -Configuration $c -Job $j -Runtime $runtime
                 $published = 0
                 foreach ($package in $result.Packages) {
@@ -42,11 +52,16 @@ function Invoke-DBBackup {
                     catch { $failed = $true; Write-DBLog $runtime.LogPath $j.Id $_.Exception.Message 'ERROR' }
                 }
                 if ($result.Status -eq 'FAILED' -or $published -ne $result.Packages.Count -or $published -eq 0) { $failed = $true }
+                if ($published -eq $result.Packages.Count -and $published -gt 0 -and $result.Status -ne 'FAILED') { $jobStatus = $result.Status }
                 if ($result.Status -eq 'DEGRADED') { $degraded = $true }
                 foreach ($errorMessage in $result.Errors) { Write-DBLog $runtime.LogPath $j.Id $errorMessage 'WARN' }
                 Write-DBLog $runtime.LogPath $j.Id "Local result: $($result.Status); published packages: $published."
             }
             catch { $failed = $true; Write-DBLog $runtime.LogPath $j.Id $_.Exception.Message 'ERROR' }
+            finally {
+                Publish-DBJobMonitoring -Configuration $c -Job $j -Status $jobStatus -DurationSeconds $watch.Elapsed.TotalSeconds -LogPath $runtime.LogPath
+                $null = $monitored.Add($j.Id)
+            }
         }
         $maintenance = $true
         try { Remove-DBExpired -Configuration $c -Runtime $runtime }
@@ -62,7 +77,12 @@ function Invoke-DBBackup {
     catch {
         if ($null -ne $runtime) { Write-DBLog $runtime.LogPath 'Execution' $_.Exception.Message 'ERROR' }
         else { Write-Error (Protect-DBMessage $_.Exception.Message) -ErrorAction Continue }
-        $exitCode = 1
+        $exitCode = if ($ready) { 1 } else { 2 }
+        if ($null -ne $runtime) {
+            foreach ($j in $jobs) {
+                if (-not $monitored.Contains($j.Id)) { Publish-DBJobMonitoring -Configuration $c -Job $j -Status FAILED -DurationSeconds $runWatch.Elapsed.TotalSeconds -LogPath $runtime.LogPath }
+            }
+        }
     }
     finally {
         if ($null -ne $runtime) {

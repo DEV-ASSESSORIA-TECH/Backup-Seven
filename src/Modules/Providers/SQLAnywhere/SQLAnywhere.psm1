@@ -49,47 +49,31 @@ function Invoke-DBSqlAnywhere {
     $root = Join-Path $Runtime.Work $Job.Id
     $null = New-Item -ItemType Directory -Path $root -Force
     $backupOptions = Join-Path $secretRoot 'backup.options'
-    $validationOptions = Join-Path $secretRoot 'validation.options'
     try {
         $connection.ASTART = 'NO'
         Write-DBSqlOption $backupOptions $connection
         # Default dbbackup copies ALL files; do not add -r, -x, -xo, -n, -s.
-        $backup = Invoke-DBTool -Executable $Configuration.Tools.DbBackup -Arguments @("@$backupOptions", $root)
+        $timeout = if ($Configuration.Contains('Execution')) { $Configuration.Execution.ToolTimeoutSeconds } else { 21600 }
+        $backup = Invoke-DBTool -Executable $Configuration.Tools.DbBackup -Arguments @("@$backupOptions", $root) -TimeoutSeconds $timeout
         if ($backup.ExitCode -ne 0) { throw "SQL Anywhere backup failed (exit $($backup.ExitCode)); tool output omitted to protect credentials." }
         $dbs = @(Get-ChildItem -LiteralPath $root -File -Filter '*.db')
         $logs = @(Get-ChildItem -LiteralPath $root -File -Filter '*.log')
         if ($dbs.Count -ne 1 -or $logs.Count -lt 1) { throw 'Expected one main .db and at least one transaction .log in the copied backup.' }
-        $before = @{}
-        foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse) { $before[$file.FullName] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
-        $engine = $Configuration.Tools.DbEngine
-        if ($engine -match '[";\r\n]') { throw 'Unsafe SQL engine path.' }
-        $local = @{
-            UID = $connection.UID; PWD = $connection.PWD; DBF = $dbs[0].FullName
-            SERVER = "dbbackup_$($Runtime.RunId)"; DBN = 'validation'
-            LINKS = 'SHMEM'; ASTART = 'YES'; ASTOP = 'YES'; CPOOL = 'NO'; INT = 'NO'
-            START = "`"$engine`" -qi -x none -sb 0 -sf all -im v -ga"
-        }
-        Write-DBSqlOption $validationOptions $local
-        foreach ($flags in @(@('-d'), @())) {
-            $argsList = @("@$validationOptions", '-im', 'v') + @($flags)
-            $validation = Invoke-DBTool -Executable $Configuration.Tools.DbValid -Arguments $argsList
-            if ($validation.ExitCode -ne 0) { throw "SQL Anywhere copied-backup validation failed (exit $($validation.ExitCode))." }
-        }
-        foreach ($file in $before.Keys) {
-            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -cne $before[$file]) { throw 'Validation modified a copied backup file.' }
+        foreach ($file in @($dbs) + @($logs)) {
+            if ($file.Length -eq 0) { throw 'SQL Anywhere produced an empty database or log file.' }
         }
         [pscustomobject]@{
             Status = 'SUCCESS'; Packages = @([pscustomobject]@{ Role = 'FULL'; SourcePath = $root; ContentsOnly = $true })
             Errors = @(); StartedAtUtc = $started; FinishedAtUtc = [DateTime]::UtcNow
             Metadata = @{
                 Strategy = 'native-full-database-and-log'; Database = $Configuration.Database.Name
-                Validation = 'dbvalid-structure-and-tables-in-memory'; Network = 'disabled-for-validation'
-                CopiedFilesUnchanged = $true; ProductionLogRename = $false; ProductionLogTruncate = $false
+                Validation = 'native-exit-code-and-nonempty-files'; RecoveryValidation = 'external-not-performed'
+                ProductionLogRename = $false; ProductionLogTruncate = $false
             }
         }
     }
     finally {
-        foreach ($file in @($backupOptions, $validationOptions)) { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop } }
+        foreach ($file in @($backupOptions)) { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop } }
     }
 }
 Export-ModuleMember -Function Read-DBSqlConnection, Invoke-DBSqlAnywhere

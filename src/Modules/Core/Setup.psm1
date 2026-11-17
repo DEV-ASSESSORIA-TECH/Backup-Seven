@@ -1,5 +1,5 @@
 Set-StrictMode -Version Latest
-foreach ($name in @('Configuration','Runtime','Artifacts','Schedule')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
+foreach ($name in @('Configuration','Runtime','Artifacts','Schedule','Capacity')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
 Import-Module (Join-Path $PSScriptRoot '../Providers/SQLAnywhere/SQLAnywhere.psm1')
 
 function ConvertTo-DBDataLiteral {
@@ -54,6 +54,7 @@ function Test-DBInstance {
         if ($connection.DBN -cne $Configuration.Database.Name) { throw 'SQL DBN must match Database.Name.' }
     }
     $null = Assert-DBBackupDependency -Configuration $Configuration -Jobs $Configuration.Jobs
+    foreach ($path in $Configuration.Paths.Values) { Assert-DBFreeSpace -Path $path -RequiredBytes 0 -ReserveBytes $Configuration.Execution.ReserveBytes }
     [pscustomobject]@{Instance=$Configuration.InstanceName;Provider=$Configuration.Provider;Jobs=@($Configuration.Jobs.Id);Status='LOCAL_CHECKS_OK';RemoteDatabaseChecked=$false}
 }
 

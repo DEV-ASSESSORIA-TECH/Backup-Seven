@@ -12,6 +12,7 @@ function Invoke-DBMySql {
         MySqlDumpPath = $Configuration.Tools.MySqlDump
         DefaultsExtraFile = $Configuration.Database.DefaultsExtraFile
         DatabaseName = $Configuration.Database.Name
+        TimeoutSeconds = if ($Configuration.Contains('Execution')) { $Configuration.Execution.ToolTimeoutSeconds } else { 21600 }
         ExtraArguments = @($Configuration.Database.ExtraArguments)
     }
     # Reject unsafe user arguments before entering any fallback.
@@ -50,7 +51,7 @@ function Invoke-DBMySql {
     $objects = @()
     $listingSucceeded = $false
     try {
-        $listed = @(Get-MySqlDatabaseObject -MySqlPath $Configuration.Tools.MySql -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile -DatabaseName $Configuration.Database.Name)
+        $listed = @(Get-MySqlDatabaseObject -MySqlPath $Configuration.Tools.MySql -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile -DatabaseName $Configuration.Database.Name -TimeoutSeconds $argsMap.TimeoutSeconds)
         $usedNames = @{}
         foreach ($object in $listed) {
             $name = Get-MySqlSafeFileName -Name $object.Name -UsedNames $usedNames

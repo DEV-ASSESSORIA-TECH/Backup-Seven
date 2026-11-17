@@ -1,7 +1,7 @@
 BeforeAll {
     $script:Repo = Split-Path -Parent $PSScriptRoot
-    Import-Module "$script:Repo/src/Modules/Providers/MySQL/MySQL.psm1" -Force
-    Import-Module "$script:Repo/src/Modules/Providers/Directory/Directory.psm1" -Force
+    Import-Module "$script:Repo/src/Modules/Providers/MySQL/MySQL.psm1"
+    Import-Module "$script:Repo/src/Modules/Providers/Directory/Directory.psm1"
 }
 Describe 'MySQL provider outcomes' {
     BeforeEach {

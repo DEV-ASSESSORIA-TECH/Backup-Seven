@@ -15,7 +15,7 @@ function New-DBTestFixture {
         $path = (Join-Path $toolRoot "$($map[$key]).exe").Replace("'", "''")
         $text = [regex]::Replace($text, "(?m)^(\s*$key\s*=\s*)'[^']*'", "`${1}'$path'")
     }
-    $text = $text.Replace('s3:REPLACE_BUCKET', 's3:test-bucket')
+    $text = $text.Replace('s3:REPLACE_BUCKET', 's3:test-bucket').Replace('ReserveBytes = 1073741824','ReserveBytes = 0')
     Set-Content $config $text
     Set-Content (Join-Path $Root 'instance/Secrets/mysql.cnf') "[client]`nuser=test`npassword=fake-secret"
     Set-Content (Join-Path $Root 'instance/Secrets/rclone.conf') "[s3]`ntype=s3"

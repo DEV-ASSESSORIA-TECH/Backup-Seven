@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot '../../Core/Process.psm1')
 
 function Assert-MySqlDatabaseArgument {
     param([AllowEmptyCollection()][string[]] $ExtraArguments)
@@ -14,76 +15,8 @@ function Assert-MySqlDatabaseArgument {
 }
 
 function Invoke-MySqlProcess {
-    param(
-        [Parameter(Mandatory)][string] $ExecutablePath,
-        [Parameter(Mandatory)][string[]] $Arguments,
-        [string] $OutputPath
-    )
-
-    if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
-        throw "Executable was not found: $ExecutablePath"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
-        if (Test-Path -LiteralPath $OutputPath) {
-            throw "Database dump destination already exists: $OutputPath"
-        }
-        $outputDirectory = Split-Path -Parent $OutputPath
-        if ([string]::IsNullOrWhiteSpace($outputDirectory)) {
-            throw 'Database dump path must include a parent directory.'
-        }
-        $null = New-Item -ItemType Directory -Path $outputDirectory -Force
-    }
-
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $ExecutablePath
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        $null = $startInfo.ArgumentList.Add($argument)
-    }
-
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    $outputStream = $null
-    try {
-        if (-not $process.Start()) {
-            throw 'Database process could not be started.'
-        }
-
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        $standardOutput = $null
-        if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-            $standardOutput = $process.StandardOutput.ReadToEnd()
-        }
-        else {
-            $outputStream = [System.IO.File]::Create($OutputPath)
-            $process.StandardOutput.BaseStream.CopyTo($outputStream)
-            $outputStream.Dispose()
-            $outputStream = $null
-        }
-
-        $process.WaitForExit()
-        [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            StdErr   = $stderrTask.GetAwaiter().GetResult().Trim()
-            StdOut   = $standardOutput
-            File     = if ([string]::IsNullOrWhiteSpace($OutputPath) -or -not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
-                $null
-            }
-            else {
-                Get-Item -LiteralPath $OutputPath
-            }
-        }
-    }
-    finally {
-        if ($null -ne $outputStream) {
-            $outputStream.Dispose()
-        }
-        $process.Dispose()
-    }
+    param([string] $ExecutablePath, [string[]] $Arguments, [string] $OutputPath, [double] $TimeoutSeconds = 21600)
+    Invoke-DBTool -Executable $ExecutablePath -Arguments $Arguments -OutputPath $OutputPath -TimeoutSeconds $TimeoutSeconds
 }
 
 function Invoke-MySqlDatabaseDump {
@@ -95,7 +28,8 @@ function Invoke-MySqlDatabaseDump {
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $OutputPath,
         [AllowEmptyCollection()][string[]] $ExtraArguments = @(),
         [string] $DatabaseObject,
-        [switch] $Force
+        [switch] $Force,
+        [double] $TimeoutSeconds = 21600
     )
 
     if (-not (Test-Path -LiteralPath $DefaultsExtraFile -PathType Leaf)) {
@@ -117,7 +51,7 @@ function Invoke-MySqlDatabaseDump {
         $arguments += @($DatabaseName, $DatabaseObject)
     }
 
-    $result = Invoke-MySqlProcess -ExecutablePath $MySqlDumpPath -Arguments $arguments -OutputPath $OutputPath
+    $result = Invoke-MySqlProcess -ExecutablePath $MySqlDumpPath -Arguments $arguments -OutputPath $OutputPath -TimeoutSeconds $TimeoutSeconds
     $length = if ($null -eq $result.File) { 0 } else { $result.File.Length }
     [pscustomobject]@{
         File       = $result.File
@@ -136,7 +70,8 @@ function New-MySqlDatabaseDump {
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DefaultsExtraFile,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DatabaseName,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $OutputPath,
-        [AllowEmptyCollection()][string[]] $ExtraArguments = @()
+        [AllowEmptyCollection()][string[]] $ExtraArguments = @(),
+        [double] $TimeoutSeconds = 21600
     )
 
     try {
@@ -162,7 +97,8 @@ function Get-MySqlDatabaseObject {
     param(
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $MySqlPath,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DefaultsExtraFile,
-        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DatabaseName
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $DatabaseName,
+        [double] $TimeoutSeconds = 21600
     )
 
     if (-not (Test-Path -LiteralPath $DefaultsExtraFile -PathType Leaf)) {
@@ -176,7 +112,7 @@ function Get-MySqlDatabaseObject {
         "--database=$DatabaseName"
         '--execute=SHOW FULL TABLES'
     )
-    $result = Invoke-MySqlProcess -ExecutablePath $MySqlPath -Arguments $arguments
+    $result = Invoke-MySqlProcess -ExecutablePath $MySqlPath -Arguments $arguments -TimeoutSeconds $TimeoutSeconds
     if ($result.ExitCode -ne 0) {
         throw "mysql failed to list database objects with exit code $($result.ExitCode). $($result.StdErr)"
     }

@@ -1,53 +1,9 @@
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'Process.psm1')
 
 function Invoke-Rclone {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [ValidateNotNullOrEmpty()]
-        [string] $RclonePath,
-
-        [Parameter(Mandatory)]
-        [ValidateNotNullOrEmpty()]
-        [string[]] $Arguments
-    )
-
-    if (-not (Test-Path -LiteralPath $RclonePath -PathType Leaf)) {
-        throw "rclone executable was not found: $RclonePath"
-    }
-
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $RclonePath
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-
-    foreach ($argument in $Arguments) {
-        $null = $startInfo.ArgumentList.Add($argument)
-    }
-
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-
-    try {
-        if (-not $process.Start()) {
-            throw 'rclone process could not be started.'
-        }
-
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        $process.WaitForExit()
-
-        [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            StdOut   = $stdoutTask.GetAwaiter().GetResult().Trim()
-            StdErr   = $stderrTask.GetAwaiter().GetResult().Trim()
-        }
-    }
-    finally {
-        $process.Dispose()
-    }
+    param([string] $RclonePath, [string[]] $Arguments, [double] $TimeoutSeconds = 21600)
+    Invoke-DBTool -Executable $RclonePath -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
 }
 
 function Test-DBStorageConfiguration {
@@ -64,7 +20,8 @@ function Test-DBStorageConfiguration {
 
         [Parameter(Mandatory)]
         [ValidatePattern('^[^:]+:.+')]
-        [string] $RemoteRoot
+        [string] $RemoteRoot,
+        [double] $TimeoutSeconds = 21600
     )
 
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -72,7 +29,7 @@ function Test-DBStorageConfiguration {
     }
 
     $remoteName = $RemoteRoot.Substring(0, $RemoteRoot.IndexOf(':') + 1)
-    $result = Invoke-Rclone -RclonePath $RclonePath -Arguments @(
+    $result = Invoke-Rclone -RclonePath $RclonePath -TimeoutSeconds $TimeoutSeconds -Arguments @(
         'listremotes'
         '--config'
         $ConfigPath
@@ -108,7 +65,8 @@ function Send-DBBackupFile {
 
         [Parameter(Mandatory)]
         [ValidatePattern('^[^:]+:.+')]
-        [string] $RemotePath
+        [string] $RemotePath,
+        [double] $TimeoutSeconds = 21600
     )
 
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -119,7 +77,7 @@ function Send-DBBackupFile {
         throw "Backup file was not found: $LocalPath"
     }
 
-    $copyResult = Invoke-Rclone -RclonePath $RclonePath -Arguments @(
+    $copyResult = Invoke-Rclone -RclonePath $RclonePath -TimeoutSeconds $TimeoutSeconds -Arguments @(
         'copyto'
         $LocalPath
         $RemotePath
@@ -139,7 +97,7 @@ function Send-DBBackupFile {
     $localDirectory = Split-Path -Parent $LocalPath
     $fileName = Split-Path -Leaf $LocalPath
     $remoteDirectory = $RemotePath.Substring(0, $remoteSeparator)
-    $checkResult = Invoke-Rclone -RclonePath $RclonePath -Arguments @(
+    $checkResult = Invoke-Rclone -RclonePath $RclonePath -TimeoutSeconds $TimeoutSeconds -Arguments @(
         'check'
         $localDirectory
         $remoteDirectory

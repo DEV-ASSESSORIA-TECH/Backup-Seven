@@ -1,7 +1,7 @@
 BeforeAll {
     $script:Repo=Split-Path -Parent $PSScriptRoot
-    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1" -Force
-    Import-Module "$script:Repo/src/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1" -Force
+    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
+    Import-Module "$script:Repo/src/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
 }
 Describe 'SQL Anywhere safe full-backup provider' {
     BeforeEach {
@@ -9,7 +9,7 @@ Describe 'SQL Anywhere safe full-backup provider' {
         $null=New-Item -ItemType Directory $script:Root
         $script:Options=Join-Path $script:Root 'connection.options'
         Set-Content $script:Options '-c "UID=''backup'';PWD=''test-secret'';HOST=''192.0.2.1:2638'';DBN=''demo''"'
-        $script:C=@{Database=@{Name='demo';ConnectionOptionsFile=$script:Options};Tools=@{DbBackup='dbbackup.exe';DbValid='dbvalid.exe';DbEngine='C:\Program Files\SQL Anywhere 17\Bin64\dbeng17.exe'}}
+        $script:C=@{Database=@{Name='demo';ConnectionOptionsFile=$script:Options};Tools=@{DbBackup='dbbackup.exe'}}
         $script:R=[pscustomobject]@{RunId='0123456789abcdef0123456789abcdef';Work=(Join-Path $script:Root 'work')}
         $script:J=[pscustomobject]@{Id='database'}
         Mock Set-Acl {} -ModuleName Runtime
@@ -30,28 +30,28 @@ Describe 'SQL Anywhere safe full-backup provider' {
         Set-Content $script:Options '-c "UID=u;PWD=p;HOST=h;DBN=demo;START=dangerous"'
         { Read-DBSqlConnection $script:Options } | Should -Throw '*Unsupported*'
     }
-    It 'backs up all files without rename/truncate and validates the local copy twice' {
+    It 'backs up without log-control flags or starting validation/restore engines' {
         $r=Invoke-DBSqlAnywhere $script:C $script:J $script:R
         $r.Status | Should -Be SUCCESS
-        $r.Metadata.ProductionLogTruncate | Should -BeFalse
+        $r.Metadata.RecoveryValidation | Should -Be 'external-not-performed'
         Should -Invoke Invoke-DBTool -ModuleName SQLAnywhere -Times 1 -Exactly -ParameterFilter {
             $Executable -eq 'dbbackup.exe' -and $Arguments.Count -eq 2 -and $Arguments[0].StartsWith('@') -and ($Arguments -join ' ') -notmatch 'test-secret| -[rxns]'
         }
-        Should -Invoke Invoke-DBTool -ModuleName SQLAnywhere -Times 2 -Exactly -ParameterFilter {
-            $Executable -eq 'dbvalid.exe' -and $Arguments[0].StartsWith('@') -and ($Arguments -join ' ') -notmatch 'test-secret|192.0.2.1'
-        }
+        Should -Invoke Invoke-DBTool -ModuleName SQLAnywhere -Times 0 -Exactly -ParameterFilter { $Executable -match 'dbvalid|dbeng|dbsrv' }
         @(Get-ChildItem (Join-Path $script:R.Work '_secrets') -File).Count | Should -Be 0
     }
-    It 'fails rather than publishing an unvalidated copied database' {
-        Mock Invoke-DBTool { [pscustomobject]@{ExitCode=3;StdOut='';StdErr='PWD=test-secret'} } -ModuleName SQLAnywhere -ParameterFilter {$Executable -eq 'dbvalid.exe'}
-        { Invoke-DBSqlAnywhere $script:C $script:J $script:R } | Should -Throw '*validation failed*'
-        @(Get-ChildItem (Join-Path $script:R.Work '_secrets') -File).Count | Should -Be 0
-    }
-    It 'detects mutation of a copied file during validation' {
+    It 'rejects an empty database or transaction log file' {
         Mock Invoke-DBTool {
-            Set-Content (Join-Path $script:R.Work 'database/demo.db') 'changed'
+            param($Arguments)
+            Set-Content (Join-Path $Arguments[-1] 'demo.db') 'database'
+            [IO.File]::WriteAllBytes((Join-Path $Arguments[-1] 'demo.log'), [byte[]]@())
             [pscustomobject]@{ExitCode=0;StdOut='';StdErr=''}
-        } -ModuleName SQLAnywhere -ParameterFilter {$Executable -eq 'dbvalid.exe'}
-        { Invoke-DBSqlAnywhere $script:C $script:J $script:R } | Should -Throw '*modified*'
+        } -ModuleName SQLAnywhere
+        { Invoke-DBSqlAnywhere $script:C $script:J $script:R } | Should -Throw '*empty*'
+    }
+    It 'fails on a native backup error and removes transient credentials' {
+        Mock Invoke-DBTool { [pscustomobject]@{ExitCode=3;StdOut='';StdErr='PWD=test-secret'} } -ModuleName SQLAnywhere
+        { Invoke-DBSqlAnywhere $script:C $script:J $script:R } | Should -Throw '*backup failed*'
+        @(Get-ChildItem (Join-Path $script:R.Work '_secrets') -File).Count | Should -Be 0
     }
 }

@@ -2,8 +2,8 @@ BeforeAll {
     $ErrorActionPreference = 'Stop'
     $script:Repo = Split-Path -Parent $PSScriptRoot
     . (Join-Path $PSScriptRoot 'V1.TestSupport.ps1')
-    Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1" -Force
-    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1" -Force
+    Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1"
+    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
     Import-Module "$script:Repo/src/Modules/Core/Encryption.psm1"
     Import-Module "$script:Repo/src/Modules/Core/Artifacts.psm1"
     Import-Module "$script:Repo/src/Modules/Core/Runner.psm1"

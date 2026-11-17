@@ -15,7 +15,7 @@ function Read-DBRecipient {
 }
 
 function Protect-DBArchive {
-    param([string] $AgePath, [string] $InputPath, [string] $OutputPath, [string] $RecipientsFile)
+    param([string] $AgePath, [string] $InputPath, [string] $OutputPath, [string] $RecipientsFile, [double] $TimeoutSeconds = 21600)
     $recipients = @(Read-DBRecipient $RecipientsFile)
     if (Test-Path -LiteralPath $OutputPath) { throw 'Encrypted destination already exists.' }
     $arguments = @('--encrypt', '--output', $OutputPath)
@@ -23,7 +23,7 @@ function Protect-DBArchive {
     foreach ($recipient in $recipients) { $arguments += @('--recipient', $recipient) }
     $arguments += $InputPath
     try {
-        $result = Invoke-DBTool -Executable $AgePath -Arguments $arguments
+        $result = Invoke-DBTool -Executable $AgePath -Arguments $arguments -TimeoutSeconds $TimeoutSeconds
         if ($result.ExitCode -ne 0) { throw "age encryption failed (exit $($result.ExitCode))." }
         if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf) -or (Get-Item -LiteralPath $OutputPath).Length -eq 0) { throw 'age did not produce a non-empty file.' }
     }

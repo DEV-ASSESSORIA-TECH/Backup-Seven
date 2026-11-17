@@ -1,7 +1,7 @@
 BeforeAll {
     $script:Repo = Split-Path -Parent $PSScriptRoot
-    Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1" -Force
-    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1" -Force
+    Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1"
+    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
 }
 Describe 'DBBackup v1 instance configuration' {
     BeforeEach {

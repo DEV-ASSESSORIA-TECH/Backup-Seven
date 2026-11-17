@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'Process.psm1')
 
 function Invoke-DBZip {
     [CmdletBinding()]
@@ -9,20 +10,16 @@ function Invoke-DBZip {
 
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
-        [string[]] $Arguments
+        [string[]] $Arguments,
+        [double] $TimeoutSeconds = 21600
     )
 
     if (-not (Test-Path -LiteralPath $SevenZipPath -PathType Leaf)) {
         throw "7-Zip executable was not found: $SevenZipPath"
     }
 
-    $output = @(& $SevenZipPath @Arguments 2>&1 | ForEach-Object { $_.ToString() })
-    $exitCode = $LASTEXITCODE
-
-    [pscustomobject]@{
-        ExitCode = $exitCode
-        Output   = $output
-    }
+    $r = Invoke-DBTool -Executable $SevenZipPath -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
+    [pscustomobject]@{ExitCode=$r.ExitCode;Output=@($r.StdOut,$r.StdErr)}
 }
 
 function Test-DBArchive {
@@ -35,14 +32,15 @@ function Test-DBArchive {
 
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
-        [string] $ArchivePath
+        [string] $ArchivePath,
+        [double] $TimeoutSeconds = 21600
     )
 
     if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
         throw "Archive was not found: $ArchivePath"
     }
 
-    $result = Invoke-DBZip -SevenZipPath $SevenZipPath -Arguments @('t', '-y', $ArchivePath)
+    $result = Invoke-DBZip -SevenZipPath $SevenZipPath -TimeoutSeconds $TimeoutSeconds -Arguments @('t', '-y', $ArchivePath)
     if ($result.ExitCode -ne 0) {
         $details = $result.Output -join [Environment]::NewLine
         throw "7-Zip archive validation failed with exit code $($result.ExitCode). $details"
@@ -73,7 +71,8 @@ function New-DBArchive {
         [ValidateRange(1, 100)]
         [int] $CpuLimitPercent = 50,
 
-        [switch] $ContentsOnly
+        [switch] $ContentsOnly,
+        [double] $TimeoutSeconds = 21600
     )
 
     if (-not (Test-Path -LiteralPath $SourcePath)) {
@@ -113,7 +112,7 @@ function New-DBArchive {
     )
 
     try {
-        $result = Invoke-DBZip -SevenZipPath $SevenZipPath -Arguments $arguments
+        $result = Invoke-DBZip -SevenZipPath $SevenZipPath -TimeoutSeconds $TimeoutSeconds -Arguments $arguments
         if ($result.ExitCode -ne 0) {
             $details = $result.Output -join [Environment]::NewLine
             throw "7-Zip archive creation failed with exit code $($result.ExitCode). $details"
@@ -128,7 +127,7 @@ function New-DBArchive {
             throw "7-Zip created an empty archive: $ArchivePath"
         }
 
-        $null = Test-DBArchive -SevenZipPath $SevenZipPath -ArchivePath $ArchivePath
+        $null = Test-DBArchive -SevenZipPath $SevenZipPath -ArchivePath $ArchivePath -TimeoutSeconds $TimeoutSeconds
         return Get-Item -LiteralPath $ArchivePath
     }
     catch {

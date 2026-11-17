@@ -19,6 +19,22 @@ internal static class FakeExternalTool
             File.AppendAllText(invocationLog, string.Join("|", args) + Environment.NewLine);
         }
 
+        if (args.Length > 0 && args[0] == "--sleep")
+        {
+            System.Threading.Thread.Sleep(int.Parse(args[1]));
+            return 0;
+        }
+        if (args.Length > 0 && args[0] == "--spawn-child")
+        {
+            var si = new System.Diagnostics.ProcessStartInfo(Environment.GetCommandLineArgs()[0], "--sleep 30000");
+            si.UseShellExecute = false;
+            si.CreateNoWindow = true;
+            var child = System.Diagnostics.Process.Start(si);
+            File.WriteAllText(args[1], child.Id.ToString());
+            System.Threading.Thread.Sleep(30000);
+            return 0;
+        }
+
         if (args.Length > 0 && args[0] == "--encrypt")
         {
             var dest = args[Array.IndexOf(args, "--output") + 1];

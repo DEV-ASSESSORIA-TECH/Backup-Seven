@@ -2,8 +2,8 @@ BeforeAll {
     $script:Repo=Split-Path -Parent $PSScriptRoot
     Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1"
     Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Schedule.psm1" -Force
-    Import-Module "$script:Repo/src/Modules/Core/Setup.psm1" -Force
+    Import-Module "$script:Repo/src/Modules/Core/Schedule.psm1"
+    Import-Module "$script:Repo/src/Modules/Core/Setup.psm1"
     function New-TestDefinition($C) {
         $task=@(Get-DBScheduleTask $C)[0]
         Get-DBTaskDefinition -Task $task -PwshPath 'C:\Program Files\PowerShell\7\pwsh.exe' -ScriptPath 'C:\DBBackup\Backup.ps1' -WorkingDirectory 'C:\DBBackup' -ConfigPath $C.ConfigPath

@@ -1,5 +1,5 @@
 Set-StrictMode -Version Latest
-foreach ($module in @('Archive', 'Storage', 'Encryption', 'Runtime', 'Configuration')) { Import-Module (Join-Path $PSScriptRoot "$module.psm1") }
+foreach ($module in @('Archive', 'Storage', 'Encryption', 'Runtime', 'Configuration', 'Capacity', 'Observation')) { Import-Module (Join-Path $PSScriptRoot "$module.psm1") }
 
 function Assert-DBBackupDependency {
     param([Collections.IDictionary] $Configuration, [object[]] $Jobs)
@@ -7,13 +7,13 @@ function Assert-DBBackupDependency {
     foreach ($j in $Jobs) {
         switch ($j.Provider) {
             MySQL { $paths += @($Configuration.Tools.MySql, $Configuration.Tools.MySqlDump, $Configuration.Database.DefaultsExtraFile) }
-            SQLAnywhere { $paths += @($Configuration.Tools.DbBackup, $Configuration.Tools.DbValid, $Configuration.Tools.DbEngine, $Configuration.Database.ConnectionOptionsFile) }
+            SQLAnywhere { $paths += @($Configuration.Tools.DbBackup, $Configuration.Database.ConnectionOptionsFile) }
             Directory { if (-not (Test-Path -LiteralPath $j.SourcePath -PathType Container)) { throw 'Directory source is missing.' } }
         }
     }
     foreach ($path in $paths) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required dependency is missing: $path" } }
     $null = Read-DBRecipient $Configuration.Encryption.RecipientsFile
-    $null = Test-DBStorageConfiguration -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -RemoteRoot $Configuration.Storage.RemoteRoot
+    $null = Test-DBStorageConfiguration -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -RemoteRoot $Configuration.Storage.RemoteRoot -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
 }
 
 function Write-DBJson {
@@ -49,7 +49,7 @@ function Send-DBBundle {
     $s = Read-DBArtifact $BundlePath $Configuration
     $destination = Join-Path (Join-Path $Runtime.Completed $s.Job) (Split-Path -Leaf $BundlePath)
     if (Test-Path -LiteralPath $destination) { throw 'Completed bundle already exists; refusing overwrite.' }
-    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath (Join-Path $BundlePath $s.FileName) -RemotePath $s.RemotePath
+    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath (Join-Path $BundlePath $s.FileName) -RemotePath $s.RemotePath -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
     $s.Transport = 'CONFIRMED'
     Write-DBJson (Join-Path $BundlePath 'state.json') $s
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
@@ -77,26 +77,29 @@ function Publish-DBPackage {
     $versions = @{}
     $toolKeys = @('SevenZip', 'Age', 'Rclone')
     if ($Job.Provider -eq 'MySQL') { $toolKeys += @('MySql', 'MySqlDump') }
-    if ($Job.Provider -eq 'SQLAnywhere') { $toolKeys += @('DbBackup', 'DbValid', 'DbEngine') }
+    if ($Job.Provider -eq 'SQLAnywhere') { $toolKeys += @('DbBackup') }
     foreach ($key in $toolKeys) {
         $tool = Get-Item -LiteralPath $Configuration.Tools[$key] -ErrorAction Stop
         $versions[$key] = @{ FileVersion = $tool.VersionInfo.FileVersion; Sha256 = (Get-FileHash -LiteralPath $tool.FullName -Algorithm SHA256).Hash }
     }
     Write-DBJson $manifestPath @{
-        SchemaVersion = 1; Producer = 'dbbackup'; Provider = $Job.Provider; Instance = $Configuration.InstanceName
+        SchemaVersion = 1; Producer = 'dbbackup'; ProducerVersion = (Get-DBApplicationVersion); Provider = $Job.Provider; Instance = $Configuration.InstanceName
         Job = $Job.Id; RunId = $Runtime.RunId; Role = $Package.Role; Status = $Result.Status
         StartedAtUtc = $Result.StartedAtUtc.ToString('o'); FinishedAtUtc = $Result.FinishedAtUtc.ToString('o')
         Metadata = $Result.Metadata; Files = $files; Tools = $versions
         Roles = @($Result.Packages.Role)
     }
+    $payloadBytes = Get-DBDirectorySize $source
+    Assert-DBFreeSpace -Path $Runtime.Work -RequiredBytes ([long] ([decimal] $payloadBytes * 1.05 + 1048576)) -ReserveBytes $Configuration.Execution.ReserveBytes
     $archive = Join-Path $Runtime.Work "$base.7z"
     $null = New-DBArchive -SevenZipPath $Configuration.Tools.SevenZip -SourcePath $source -ArchivePath $archive -ContentsOnly `
-        -CompressionLevel $Configuration.Archive.CompressionLevel -CpuLimitPercent $Configuration.Archive.CpuLimitPercent
+        -CompressionLevel $Configuration.Archive.CompressionLevel -CpuLimitPercent $Configuration.Archive.CpuLimitPercent -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
     $bundle = Join-Path $Runtime.Staging $base
     Set-DBPrivateDirectory $bundle
     try {
+        Assert-DBFreeSpace -Path $Runtime.Staging -RequiredBytes ([long] ([decimal] (Get-Item -LiteralPath $archive).Length * 1.05 + 1048576)) -ReserveBytes $Configuration.Execution.ReserveBytes
         $temp = Join-Path $bundle 'payload.tmp'
-        Protect-DBArchive -AgePath $Configuration.Tools.Age -InputPath $archive -OutputPath $temp -RecipientsFile $Configuration.Encryption.RecipientsFile
+        Protect-DBArchive -AgePath $Configuration.Tools.Age -InputPath $archive -OutputPath $temp -RecipientsFile $Configuration.Encryption.RecipientsFile -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
         $name = "$base.7z.age"
         $payload = Join-Path $bundle $name
         Move-Item -LiteralPath $temp -Destination $payload -ErrorAction Stop
@@ -158,7 +161,7 @@ function Remove-DBExpired {
 function Publish-DBLog {
     param([Collections.IDictionary] $Configuration, $Runtime)
     $remote = '{0}/{1}/Logs/{2}/{3}' -f $Configuration.Storage.RemoteRoot.TrimEnd('/'), $Configuration.InstanceName, [DateTime]::UtcNow.ToString('yyyy/MM/dd'), [IO.Path]::GetFileName($Runtime.LogPath)
-    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath $Runtime.LogPath -RemotePath $remote
+    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath $Runtime.LogPath -RemotePath $remote -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
 }
 
 Export-ModuleMember -Function Assert-DBBackupDependency, Publish-DBPackage, Invoke-DBPendingRetry, Remove-DBExpired, Publish-DBLog, Read-DBArtifact
