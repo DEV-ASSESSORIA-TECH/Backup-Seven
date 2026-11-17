@@ -1,10 +1,10 @@
-Describe 'BackupSeven module contracts' {
+Describe 'DBBackup module contracts' {
 BeforeAll {
-    $script:TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("BackupSeven-modules-$([guid]::NewGuid().ToString('N'))")
+    $script:TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("DBBackup-modules-$([guid]::NewGuid().ToString('N'))")
     $null = New-Item -ItemType Directory -Path $script:TestRoot
     $fakeTool = Join-Path $script:TestRoot 'fake-tool.exe'
     $compiler = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    & $compiler '/nologo' '/target:exe' "/out:$fakeTool" (Join-Path $PSScriptRoot 'fixtures/FakeExternalTool.cs')
+    & $compiler '/nologo' '/target:exe' "/out:$fakeTool" (Join-Path $PSScriptRoot 'fixtures/V1FakeTool.cs')
     if ($LASTEXITCODE -ne 0) {
         throw "Fake tool compilation failed with exit code $LASTEXITCODE."
     }
@@ -14,7 +14,7 @@ BeforeAll {
     $script:MySql = Join-Path $script:TestRoot 'mysql.exe'
     $script:Rclone = Join-Path $script:TestRoot 'rclone.exe'
     $script:InvocationLog = Join-Path $script:TestRoot 'tool-invocations.log'
-    $env:BACKUPSEVEN_FAKE_INVOCATION_LOG = $script:InvocationLog
+    $env:DBBACKUP_FAKE_INVOCATION_LOG = $script:InvocationLog
     Copy-Item $fakeTool $script:SevenZip
     Copy-Item $fakeTool $script:MySqlDump
     Copy-Item $fakeTool $script:MySql
@@ -25,27 +25,27 @@ BeforeAll {
     Set-Content -LiteralPath $script:DefaultsFile -Value "[client]`nuser=test"
     Set-Content -LiteralPath $script:RcloneConfig -Value "[s3]`ntype=s3"
 
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Archive.psm1') -Force
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Database.psm1') -Force
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Storage.psm1') -Force
-    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Monitoring.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Archive.psm1')
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Providers/MySQL/Client.psm1')
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Storage.psm1')
+    Import-Module (Join-Path $PSScriptRoot '../src/Modules/Core/Monitoring.psm1')
 }
 
 AfterAll {
     foreach ($name in @(
-        'BACKUPSEVEN_FAKE_7ZIP_CREATE_EXIT',
-        'BACKUPSEVEN_FAKE_7ZIP_TEST_EXIT',
-        'BACKUPSEVEN_FAKE_RCLONE_LIST_EXIT',
-        'BACKUPSEVEN_FAKE_RCLONE_COPY_EXIT',
-        'BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT',
-        'BACKUPSEVEN_FAKE_RCLONE_FAIL_MATCH',
-        'BACKUPSEVEN_FAKE_MYSQLDUMP_EXIT',
-        'BACKUPSEVEN_FAKE_MYSQLDUMP_NORMAL_EXIT',
-        'BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT',
-        'BACKUPSEVEN_FAKE_MYSQLDUMP_FAILED_OBJECT',
-        'BACKUPSEVEN_FAKE_MYSQL_EXIT',
-        'BACKUPSEVEN_FAKE_MYSQL_OBJECTS',
-        'BACKUPSEVEN_FAKE_INVOCATION_LOG'
+        'DBBACKUP_FAKE_7ZIP_CREATE_EXIT',
+        'DBBACKUP_FAKE_7ZIP_TEST_EXIT',
+        'DBBACKUP_FAKE_RCLONE_LIST_EXIT',
+        'DBBACKUP_FAKE_RCLONE_COPY_EXIT',
+        'DBBACKUP_FAKE_RCLONE_CHECK_EXIT',
+        'DBBACKUP_FAKE_RCLONE_FAIL_MATCH',
+        'DBBACKUP_FAKE_MYSQLDUMP_EXIT',
+        'DBBACKUP_FAKE_MYSQLDUMP_NORMAL_EXIT',
+        'DBBACKUP_FAKE_MYSQLDUMP_FORCE_EXIT',
+        'DBBACKUP_FAKE_MYSQLDUMP_FAILED_OBJECT',
+        'DBBACKUP_FAKE_MYSQL_EXIT',
+        'DBBACKUP_FAKE_MYSQL_OBJECTS',
+        'DBBACKUP_FAKE_INVOCATION_LOG'
     )) {
         [Environment]::SetEnvironmentVariable($name, $null)
     }
@@ -61,7 +61,7 @@ Context 'Archive module' {
         $archive = Join-Path $script:TestRoot 'successful.7z'
         Set-Content -LiteralPath $source -Value 'content'
 
-        $result = New-SevenArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive
+        $result = New-DBArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive
 
         $result.Length | Should -BeGreaterThan 0
         Test-Path -LiteralPath $archive | Should -BeTrue
@@ -73,7 +73,7 @@ Context 'Archive module' {
         Set-Content -LiteralPath $source -Value 'content'
         $expectedThreads = [Math]::Max(1, [Math]::Floor([Environment]::ProcessorCount * 0.5))
 
-        $null = New-SevenArchive `
+        $null = New-DBArchive `
             -SevenZipPath $script:SevenZip `
             -SourcePath $source `
             -ArchivePath $archive `
@@ -87,26 +87,26 @@ Context 'Archive module' {
         $source = Join-Path $script:TestRoot 'warning-source.txt'
         $archive = Join-Path $script:TestRoot 'warning.7z'
         Set-Content -LiteralPath $source -Value 'content'
-        $env:BACKUPSEVEN_FAKE_7ZIP_CREATE_EXIT = '1'
+        $env:DBBACKUP_FAKE_7ZIP_CREATE_EXIT = '1'
 
-        { New-SevenArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive } |
+        { New-DBArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive } |
             Should -Throw '*exit code 1*'
         Test-Path -LiteralPath $archive | Should -BeFalse
 
-        $env:BACKUPSEVEN_FAKE_7ZIP_CREATE_EXIT = $null
+        $env:DBBACKUP_FAKE_7ZIP_CREATE_EXIT = $null
     }
 
     It 'removes an archive that fails the integrity test' {
         $source = Join-Path $script:TestRoot 'invalid-source.txt'
         $archive = Join-Path $script:TestRoot 'invalid.7z'
         Set-Content -LiteralPath $source -Value 'content'
-        $env:BACKUPSEVEN_FAKE_7ZIP_TEST_EXIT = '2'
+        $env:DBBACKUP_FAKE_7ZIP_TEST_EXIT = '2'
 
-        { New-SevenArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive } |
+        { New-DBArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive } |
             Should -Throw '*validation failed*'
         Test-Path -LiteralPath $archive | Should -BeFalse
 
-        $env:BACKUPSEVEN_FAKE_7ZIP_TEST_EXIT = $null
+        $env:DBBACKUP_FAKE_7ZIP_TEST_EXIT = $null
     }
 
     It 'archives directory contents without the staging directory name' {
@@ -115,9 +115,42 @@ Context 'Archive module' {
         $null = New-Item -ItemType Directory -Path $source
         Set-Content -LiteralPath (Join-Path $source 'manifest.json') -Value '{"status":"SUCCESS"}'
 
-        $null = New-SevenArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive -ContentsOnly
+        $null = New-DBArchive -SevenZipPath $script:SevenZip -SourcePath $source -ArchivePath $archive -ContentsOnly
 
         Get-Content -LiteralPath $archive -Raw | Should -Match 'ENTRY:manifest\.json'
+    }
+
+    It 'archives an external directory in place under content/ with the manifest at the root' {
+        foreach ($leaf in @('documents', 'manifest.json', 'content')) {
+            $meta = Join-Path $script:TestRoot "meta-$([guid]::NewGuid().ToString('N'))"
+            $parent = Join-Path $script:TestRoot "src-$([guid]::NewGuid().ToString('N'))"
+            $content = Join-Path $parent $leaf
+            $null = New-Item -ItemType Directory -Path $meta, (Join-Path $content 'sub')
+            Set-Content -LiteralPath (Join-Path $meta 'manifest.json') -Value '{"producer":"dbbackup"}'
+            Set-Content -LiteralPath (Join-Path $content 'sub/file.txt') -Value 'data'
+            $archive = Join-Path $script:TestRoot "external-$([guid]::NewGuid().ToString('N')).7z"
+            $null = New-DBArchiveWithContent -SevenZipPath $script:SevenZip -MetadataPath $meta -ContentPath $content -ArchivePath $archive
+            $text = Get-Content -LiteralPath $archive -Raw
+            $text | Should -Match '(?m)^ENTRY:manifest\.json\r?$'
+            $text | Should -Match '(?m)^ENTRY:content/sub/file\.txt\r?$'
+            if ($leaf -cne 'content') { $text | Should -Not -Match "ENTRY:$([regex]::Escape($leaf))/" }
+            Test-Path -LiteralPath (Join-Path $content 'sub/file.txt') | Should -BeTrue
+        }
+    }
+
+    It 'removes the archive when renaming the content folder fails' {
+        $meta = Join-Path $script:TestRoot 'meta-fail'
+        $content = Join-Path $script:TestRoot 'docs-fail'
+        $null = New-Item -ItemType Directory -Path $meta, $content
+        Set-Content -LiteralPath (Join-Path $meta 'manifest.json') -Value '{}'
+        Set-Content -LiteralPath (Join-Path $content 'a.txt') -Value 'a'
+        $archive = Join-Path $script:TestRoot 'rename-fail.7z'
+        $env:DBBACKUP_FAKE_7ZIP_RENAME_EXIT = '2'
+        try {
+            { New-DBArchiveWithContent -SevenZipPath $script:SevenZip -MetadataPath $meta -ContentPath $content -ArchivePath $archive } | Should -Throw '*rename*'
+            Test-Path -LiteralPath $archive | Should -BeFalse
+        }
+        finally { $env:DBBACKUP_FAKE_7ZIP_RENAME_EXIT = $null }
     }
 }
 
@@ -125,7 +158,7 @@ Context 'Database module' {
     It 'streams a non-empty database dump to disk' {
         $dump = Join-Path $script:TestRoot 'database.sql'
 
-        $result = New-SevenDatabaseDump `
+        $result = New-MySqlDatabaseDump `
             -MySqlDumpPath $script:MySqlDump `
             -DefaultsExtraFile $script:DefaultsFile `
             -DatabaseName seven `
@@ -138,7 +171,7 @@ Context 'Database module' {
     It 'rejects passwords in extra arguments' {
         $dump = Join-Path $script:TestRoot 'password.sql'
 
-        { New-SevenDatabaseDump `
+        { New-MySqlDatabaseDump `
                 -MySqlDumpPath $script:MySqlDump `
                 -DefaultsExtraFile $script:DefaultsFile `
                 -DatabaseName seven `
@@ -149,7 +182,7 @@ Context 'Database module' {
     It 'rejects force in extra arguments' {
         $dump = Join-Path $script:TestRoot 'force.sql'
 
-        { New-SevenDatabaseDump `
+        { New-MySqlDatabaseDump `
                 -MySqlDumpPath $script:MySqlDump `
                 -DefaultsExtraFile $script:DefaultsFile `
                 -DatabaseName seven `
@@ -158,7 +191,7 @@ Context 'Database module' {
     }
 
     It 'lists base tables and views' {
-        $objects = @(Get-SevenDatabaseObject `
+        $objects = @(Get-MySqlDatabaseObject `
                 -MySqlPath $script:MySql `
                 -DefaultsExtraFile $script:DefaultsFile `
                 -DatabaseName seven)
@@ -170,9 +203,9 @@ Context 'Database module' {
 
     It 'preserves a non-empty forced dump with a non-zero exit code' {
         $dump = Join-Path $script:TestRoot 'degraded.sql'
-        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT = '2'
+        $env:DBBACKUP_FAKE_MYSQLDUMP_FORCE_EXIT = '2'
 
-        $result = Invoke-SevenDatabaseDump `
+        $result = Invoke-MySqlDatabaseDump `
             -MySqlDumpPath $script:MySqlDump `
             -DefaultsExtraFile $script:DefaultsFile `
             -DatabaseName seven `
@@ -182,16 +215,16 @@ Context 'Database module' {
         $result.ExitCode | Should -Be 2
         $result.IsNonEmpty | Should -BeTrue
         Test-Path -LiteralPath $dump | Should -BeTrue
-        $env:BACKUPSEVEN_FAKE_MYSQLDUMP_FORCE_EXIT = $null
+        $env:DBBACKUP_FAKE_MYSQLDUMP_FORCE_EXIT = $null
     }
 
     It 'normalizes unsafe and colliding object file names' {
         $used = @{}
 
-        Get-SevenSafeFileName -Name 'sales:2026' -UsedNames $used |
+        Get-MySqlSafeFileName -Name 'sales:2026' -UsedNames $used |
             Should -Match '^sales_2026_[a-f0-9]{8}$'
-        Get-SevenSafeFileName -Name 'clientes' -UsedNames $used | Should -Be 'clientes'
-        Get-SevenSafeFileName -Name 'CLIENTES' -UsedNames $used |
+        Get-MySqlSafeFileName -Name 'clientes' -UsedNames $used | Should -Be 'clientes'
+        Get-MySqlSafeFileName -Name 'CLIENTES' -UsedNames $used |
             Should -Match '^CLIENTES_[a-f0-9]{8}$'
     }
 }
@@ -201,36 +234,72 @@ Context 'Storage module' {
         $archive = Join-Path $script:TestRoot 'upload.7z'
         Set-Content -LiteralPath $archive -Value 'archive'
 
-        Test-SevenStorageConfiguration `
+        Test-DBStorageConfiguration `
             -RclonePath $script:Rclone `
             -ConfigPath $script:RcloneConfig `
             -RemoteRoot 's3:bucket/backups' | Should -BeTrue
 
-        Send-SevenBackupFile `
+        $sent = Send-DBBackupFile `
             -RclonePath $script:Rclone `
             -ConfigPath $script:RcloneConfig `
             -LocalPath $archive `
-            -RemotePath 's3:bucket/backups/upload.7z' | Should -Be 's3:bucket/backups/upload.7z'
+            -RemotePath 's3:bucket/backups/upload.7z'
+        $sent.RemotePath | Should -Be 's3:bucket/backups/upload.7z'
+        $sent.Verification | Should -Be 'size+md5'
+        Get-Content -LiteralPath $script:InvocationLog -Raw | Should -Not -Match '(?m)^check\|'
+    }
+
+    It 'computes SHA-256 and MD5 in one pass' {
+        $file = Join-Path $script:TestRoot 'digest.bin'
+        Set-Content -LiteralPath $file -Value 'digest me' -NoNewline
+        $digest = Get-DBFileDigest -Path $file
+        $digest.Length | Should -Be 9
+        $digest.Sha256 | Should -Be (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+        $digest.Md5 | Should -Be ([Convert]::ToHexString([Security.Cryptography.MD5]::HashData([IO.File]::ReadAllBytes($file))).ToLowerInvariant())
+    }
+
+    It 'rejects a remote MD5 that differs from the local digest' {
+        $archive = Join-Path $script:TestRoot 'md5-mismatch.7z'
+        Set-Content -LiteralPath $archive -Value 'archive'
+        $env:DBBACKUP_FAKE_RCLONE_REMOTE_MD5 = '00000000000000000000000000000000'
+        try {
+            { Send-DBBackupFile -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -LocalPath $archive -RemotePath 's3:bucket/backups/md5-mismatch.7z' } |
+                Should -Throw '*MD5 mismatch*'
+        }
+        finally { $env:DBBACKUP_FAKE_RCLONE_REMOTE_MD5 = $null }
+    }
+
+    It 'reports size-only verification when the backend has no MD5' {
+        $archive = Join-Path $script:TestRoot 'no-hash.7z'
+        Set-Content -LiteralPath $archive -Value 'archive'
+        $env:DBBACKUP_FAKE_RCLONE_NO_HASH = '1'
+        try {
+            (Send-DBBackupFile -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -LocalPath $archive -RemotePath 's3:bucket/backups/no-hash.7z').Verification |
+                Should -Be 'size-only'
+            { Send-DBBackupFile -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -LocalPath $archive -RemotePath 's3:bucket/backups/no-hash.7z' -ExpectedSize 999 -ExpectedMd5 'abc' } |
+                Should -Throw '*size mismatch*'
+        }
+        finally { $env:DBBACKUP_FAKE_RCLONE_NO_HASH = $null }
     }
 
     It 'fails when remote validation fails' {
         $archive = Join-Path $script:TestRoot 'failed-check.7z'
         Set-Content -LiteralPath $archive -Value 'archive'
-        $env:BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT = '1'
+        $env:DBBACKUP_FAKE_RCLONE_CHECK_EXIT = '1'
 
-        { Send-SevenBackupFile `
+        { Send-DBBackupFile `
                 -RclonePath $script:Rclone `
                 -ConfigPath $script:RcloneConfig `
                 -LocalPath $archive `
-                -RemotePath 's3:bucket/backups/failed-check.7z' } | Should -Throw '*rclone check failed*'
+                -RemotePath 's3:bucket/backups/failed-check.7z' } | Should -Throw '*Remote verification failed*'
 
-        $env:BACKUPSEVEN_FAKE_RCLONE_CHECK_EXIT = $null
+        $env:DBBACKUP_FAKE_RCLONE_CHECK_EXIT = $null
     }
 }
 
 Context 'Monitoring module' {
     It 'formats the generic backup contract with fixed identity labels' {
-        $content = Format-SevenBackupMetric `
+        $content = Format-DBBackupMetric `
             -Service 'seven' `
             -BackupId 'database' `
             -CollectedAtUtc ([DateTime]::new(2026, 11, 13, 12, 0, 0, [DateTimeKind]::Utc)) `
@@ -262,7 +331,7 @@ Context 'Monitoring module' {
     It 'publishes and reads back the success due time' {
         $directory = Join-Path $script:TestRoot 'textfile-due'
         $null = New-Item -ItemType Directory -Path $directory -Force
-        $content = Format-SevenBackupMetric `
+        $content = Format-DBBackupMetric `
             -Service 'seven' `
             -BackupId 'fiscal' `
             -CollectedAtUtc ([DateTime]::UtcNow) `
@@ -273,12 +342,12 @@ Context 'Monitoring module' {
         $content | Should -Match '(?m)^# TYPE backup_success_due_timestamp_seconds gauge$'
         $content | Should -Match '(?m)^backup_success_due_timestamp_seconds\{service="seven",backup_id="fiscal"\} 1794700800$'
         $content | Should -Match 'criticality="baixa"'
-        $path = Write-SevenBackupMetric -Directory $directory -Service 'seven' -BackupId 'fiscal' -Content $content
-        (Read-SevenBackupMetricState -Path $path).SuccessDueTimestamp | Should -Be 1794700800
+        $path = Write-DBBackupMetric -Directory $directory -Service 'seven' -BackupId 'fiscal' -Content $content
+        (Read-DBBackupMetricState -Path $path).SuccessDueTimestamp | Should -Be 1794700800
     }
 
     It 'omits state that is not known' {
-        $content = Format-SevenBackupMetric `
+        $content = Format-DBBackupMetric `
             -Service 'seven' `
             -BackupId 'fiscal' `
             -CollectedAtUtc ([DateTime]::UtcNow) `
@@ -290,18 +359,18 @@ Context 'Monitoring module' {
     }
 
     It 'rejects identifiers outside the contract' {
-        { Format-SevenBackupMetric -Service 'Seven' -BackupId 'database' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true } |
+        { Format-DBBackupMetric -Service 'Seven' -BackupId 'database' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true } |
             Should -Throw '*service identifier*'
-        { Format-SevenBackupMetric -Service 'seven' -BackupId 'a__b' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true } |
+        { Format-DBBackupMetric -Service 'seven' -BackupId 'a__b' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true } |
             Should -Throw '*backup identifier*'
-        { Format-SevenBackupMetric -Service 'seven' -BackupId 'database' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true -InfoLabels @{ instance = 'x' } } |
+        { Format-DBBackupMetric -Service 'seven' -BackupId 'database' -CollectedAtUtc ([DateTime]::UtcNow) -CollectionSucceeded $true -InfoLabels @{ instance = 'x' } } |
             Should -Throw '*backup_info label*'
     }
 
     It 'writes atomically and reads the last success back' {
         $directory = Join-Path $script:TestRoot 'textfile'
         $null = New-Item -ItemType Directory -Path $directory -Force
-        $content = Format-SevenBackupMetric `
+        $content = Format-DBBackupMetric `
             -Service 'seven' `
             -BackupId 'database' `
             -CollectedAtUtc ([DateTime]::UtcNow) `
@@ -309,21 +378,21 @@ Context 'Monitoring module' {
             -LastSuccessTimestamp 1794592800 `
             -LastSuccessSizeBytes 42
 
-        $path = Write-SevenBackupMetric -Directory $directory -Service 'seven' -BackupId 'database' -Content $content
+        $path = Write-DBBackupMetric -Directory $directory -Service 'seven' -BackupId 'database' -Content $content
 
         $path | Should -Be (Join-Path $directory 'seven__database.prom')
         Test-Path -LiteralPath "$path.tmp" | Should -BeFalse
         $bytes = [System.IO.File]::ReadAllBytes($path)
         $bytes[0] | Should -Be ([byte][char]'#')
-        $state = Read-SevenBackupMetricState -Path $path
+        $state = Read-DBBackupMetricState -Path $path
         $state.LastSuccessTimestamp | Should -Be 1794592800
         $state.LastSuccessSizeBytes | Should -Be 42
-        (Read-SevenBackupMetricState -Path (Join-Path $directory 'missing.prom')).LastSuccessTimestamp | Should -Be 0
+        (Read-DBBackupMetricState -Path (Join-Path $directory 'missing.prom')).LastSuccessTimestamp | Should -Be 0
     }
 
     It 'never creates the textfile directory' {
         $missing = Join-Path $script:TestRoot 'missing-textfile'
-        { Write-SevenBackupMetric -Directory $missing -Service 'seven' -BackupId 'database' -Content "x`n" } |
+        { Write-DBBackupMetric -Directory $missing -Service 'seven' -BackupId 'database' -Content "x`n" } |
             Should -Throw '*directory was not found*'
         Test-Path -LiteralPath $missing | Should -BeFalse
     }

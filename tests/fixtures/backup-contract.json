@@ -1,0 +1,18 @@
+{
+  "source": "https://github.com/DEV-ASSESSORIA-TECH/grafana/blob/main/contracts/prometheus/backup.yml",
+  "sha": "658a950d735215eaf80dea246fec1bc1965ec973",
+  "version": "0.3.0",
+  "metricHelp": {
+    "backup_last_success_timestamp_seconds": "Ponto de recuperacao do ultimo backup concluido e validado (Unix; 0 = nunca).",
+    "backup_last_success_size_bytes": "Tamanho do ultimo backup concluido e validado.",
+    "backup_last_attempt_timestamp_seconds": "Fim da ultima tentativa de backup (Unix).",
+    "backup_last_attempt_success": "Resultado da ultima tentativa de backup (1 = sucesso, 0 = falha).",
+    "backup_last_attempt_duration_seconds": "Duracao da ultima tentativa de backup.",
+    "backup_collection_timestamp_seconds": "Momento em que o produtor gerou este arquivo (Unix).",
+    "backup_collection_success": "Produtor conseguiu observar o estado do backup (1 = sim, 0 = nao).",
+    "backup_last_attempt_degraded": "Ultima tentativa publicou um backup degradado (1 = sim, 0 = nao).",
+    "backup_expected_interval_seconds": "Intervalo esperado entre backups bem-sucedidos.",
+    "backup_success_due_timestamp_seconds": "Primeira execucao agendada depois do ultimo sucesso, prazo do proximo sucesso (Unix).",
+    "backup_info": "Descricao do backup (valor sempre 1)."
+  }
+}

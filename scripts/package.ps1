@@ -1,149 +1,69 @@
-#requires -Version 7.0
-
+#requires -Version 7.2
 [CmdletBinding()]
-param(
-    [string] $OutputDirectory
-)
-
+param([string] $OutputDirectory)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
-$sourceRoot = Join-Path $repositoryRoot 'src'
-$mysqlTemplatePath = Join-Path $sourceRoot 'Secrets/mysql-backup.example.cnf'
-$rcloneTemplatePath = Join-Path $sourceRoot 'Secrets/rclone.example.conf'
-$versionPath = Join-Path $repositoryRoot 'VERSION'
-$stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("BackupSeven-package-$([guid]::NewGuid().ToString('N'))")
-
+$repository = Split-Path -Parent $PSScriptRoot
+$version = (Get-Content -LiteralPath (Join-Path $repository 'VERSION') -Raw).Trim()
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'VERSION must be X.Y.Z.' }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repository 'dist' }
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+$null = New-Item -ItemType Directory -Path $OutputDirectory -Force
+$temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$staging = Join-Path $temporaryRoot "DBBackup-package-$([guid]::NewGuid().ToString('N'))"
+$temporaryZip = Join-Path $OutputDirectory "DBBackup-$version.build-$([guid]::NewGuid().ToString('N')).zip"
+$zipPath = Join-Path $OutputDirectory "DBBackup-$version.zip"
+$checksumTemp = "$zipPath.sha256.tmp"
 try {
-    if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
-        throw "VERSION file was not found: $versionPath"
+    $null = New-Item -ItemType Directory -Path $staging
+    $entries = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'package.files.json') -Raw | ConvertFrom-Json)
+    $targets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $hashes = @{}
+    foreach ($entry in $entries) {
+        if ($entry.target -match '(^|/)\.\.?(/|$)|[\\:]' -or $entry.target.StartsWith('/') -or -not $targets.Add($entry.target)) { throw 'Unsafe or duplicate package target.' }
+        $source = [IO.Path]::GetFullPath((Join-Path $repository $entry.source))
+        if (-not $source.StartsWith($repository + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Package source escaped repository.' }
+        $file = Get-Item -LiteralPath $source -Force
+        if ($file.PSIsContainer -or $file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Package sources must be regular files.' }
+        if ($entry.target -match '(?i)(^|/)(Secrets|Instances|Runtime|Pending|Completed|Logs)(/|$)|(^|/)config\.psd1$') { throw 'Operational state is forbidden in packages.' }
+        $destination = Join-Path $staging $entry.target
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
+        Copy-Item -LiteralPath $source -Destination $destination
+        $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw 'Staged package file hash mismatch.' }
+        $hashes[$entry.target] = $hash
     }
-
-    $version = (Get-Content -LiteralPath $versionPath -Raw).Trim()
-    if ($version -notmatch '^\d+\.\d+\.\d+$') {
-        throw "VERSION must use X.Y.Z format: $version"
-    }
-
-    if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-        $OutputDirectory = Join-Path $repositoryRoot 'dist'
-    }
-    elseif (-not [System.IO.Path]::IsPathFullyQualified($OutputDirectory)) {
-        $OutputDirectory = Join-Path $repositoryRoot $OutputDirectory
-    }
-
-    $requiredSources = @(
-        (Join-Path $sourceRoot 'Backup-Seven.ps1')
-        (Join-Path $sourceRoot 'Setup-BackupSeven.ps1')
-        (Join-Path $sourceRoot 'Setup.bat')
-        (Join-Path $sourceRoot 'Aplicar-Configuracao.bat')
-        (Join-Path $sourceRoot 'config.example.psd1')
-        $mysqlTemplatePath
-        $rcloneTemplatePath
-        (Join-Path $repositoryRoot 'RUNBOOK.md')
-        $versionPath
-    )
-
-    foreach ($requiredSource in $requiredSources) {
-        if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) {
-            throw "Required package source was not found: $requiredSource"
+    @{SchemaVersion=1;Product='DBBackup';Version=$version;Files=$hashes} | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath (Join-Path $staging 'PACKAGE-MANIFEST.json') -Encoding utf8
+    [IO.Compression.ZipFile]::CreateFromDirectory($staging,$temporaryZip,[IO.Compression.CompressionLevel]::Optimal,$false)
+    $zip = [IO.Compression.ZipFile]::OpenRead($temporaryZip)
+    try {
+        $actual = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
+        $expected = @($targets) + @('PACKAGE-MANIFEST.json')
+        if (@(Compare-Object ($expected | Sort-Object) ($actual | Sort-Object)).Count) { throw 'ZIP entry allowlist mismatch.' }
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName.Replace('\','/')
+            if ($name -eq 'PACKAGE-MANIFEST.json') { continue }
+            $stream = $entry.Open()
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $hash = [Convert]::ToHexString($sha.ComputeHash($stream)).ToLowerInvariant()
+                if ($hash -cne $hashes[$name]) { throw 'ZIP file content hash mismatch.' }
+            }
+            finally { $stream.Dispose(); $sha.Dispose() }
         }
     }
-
-    $moduleSource = Join-Path $sourceRoot 'Modules'
-    $moduleFiles = @(Get-ChildItem -LiteralPath $moduleSource -Filter '*.psm1' -File | Sort-Object Name)
-    if ($moduleFiles.Count -eq 0) {
-        throw "No PowerShell modules were found in: $moduleSource"
-    }
-
-    $null = New-Item -ItemType Directory -Path $stagingRoot -Force
-    $stagingModules = Join-Path $stagingRoot 'Modules'
-    $stagingSecrets = Join-Path $stagingRoot 'Secrets'
-    $null = New-Item -ItemType Directory -Path $stagingModules -Force
-    $null = New-Item -ItemType Directory -Path $stagingSecrets -Force
-
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'Backup-Seven.ps1') -Destination $stagingRoot
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'Setup-BackupSeven.ps1') -Destination $stagingRoot
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'Setup.bat') -Destination $stagingRoot
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'Aplicar-Configuracao.bat') -Destination $stagingRoot
-    Copy-Item `
-        -LiteralPath (Join-Path $sourceRoot 'config.example.psd1') `
-        -Destination (Join-Path $stagingRoot 'config.psd1')
-    Copy-Item `
-        -LiteralPath $mysqlTemplatePath `
-        -Destination (Join-Path $stagingSecrets 'mysql-backup.cnf')
-    Copy-Item `
-        -LiteralPath $rcloneTemplatePath `
-        -Destination (Join-Path $stagingSecrets 'rclone.conf')
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'RUNBOOK.md') -Destination $stagingRoot
-    Copy-Item -LiteralPath $versionPath -Destination $stagingRoot
-    foreach ($moduleFile in $moduleFiles) {
-        Copy-Item -LiteralPath $moduleFile.FullName -Destination $stagingModules
-    }
-
-    $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
-    $archivePath = Join-Path $OutputDirectory "BackupSeven-$version.zip"
-    $checksumPath = "$archivePath.sha256"
-    if (Test-Path -LiteralPath $archivePath) {
-        Remove-Item -LiteralPath $archivePath -Force
-    }
-    if (Test-Path -LiteralPath $checksumPath) {
-        Remove-Item -LiteralPath $checksumPath -Force
-    }
-
-    Compress-Archive -Path (Join-Path $stagingRoot '*') -DestinationPath $archivePath -CompressionLevel Optimal
-
-    $expectedEntries = @(
-        'Backup-Seven.ps1'
-        'Setup-BackupSeven.ps1'
-        'Setup.bat'
-        'Aplicar-Configuracao.bat'
-        'config.psd1'
-        'RUNBOOK.md'
-        'Secrets/mysql-backup.cnf'
-        'Secrets/rclone.conf'
-        'VERSION'
-    ) + @($moduleFiles | ForEach-Object { "Modules/$($_.Name)" })
-
-    $zip = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
-    try {
-        $actualEntries = @(
-            $zip.Entries |
-                Where-Object { -not $_.FullName.EndsWith('/') } |
-                ForEach-Object { $_.FullName.Replace('\', '/') } |
-                Sort-Object
-        )
-    }
-    finally {
-        $zip.Dispose()
-    }
-
-    $differences = @(Compare-Object ($expectedEntries | Sort-Object) $actualEntries)
-    if ($differences.Count -gt 0) {
-        $details = $differences | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }
-        throw "Package content validation failed. $($details -join '; ')"
-    }
-
-    $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$hash  $([System.IO.Path]::GetFileName($archivePath))" |
-        Set-Content -LiteralPath $checksumPath -Encoding ascii
-
-    $recordedHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+')[0]
-    if ($recordedHash -ne $hash) {
-        throw "SHA256 validation failed for package: $archivePath"
-    }
-
-    Get-Item -LiteralPath $archivePath
+    finally { $zip.Dispose() }
+    $digest = (Get-FileHash -LiteralPath $temporaryZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText($checksumTemp,"$digest  $([IO.Path]::GetFileName($zipPath))`n",[Text.UTF8Encoding]::new($false))
+    [IO.File]::Move($temporaryZip,$zipPath,$true)
+    [IO.File]::Move($checksumTemp,"$zipPath.sha256",$true)
+    Get-Item -LiteralPath $zipPath
 }
 finally {
-    $resolvedStaging = [System.IO.Path]::GetFullPath($stagingRoot)
-    $resolvedTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-    $safePrefix = 'BackupSeven-package-'
-    if (
-        $resolvedStaging.StartsWith($resolvedTemp, [System.StringComparison]::OrdinalIgnoreCase) -and
-        (Split-Path -Leaf $resolvedStaging).StartsWith($safePrefix, [System.StringComparison]::Ordinal) -and
-        (Test-Path -LiteralPath $resolvedStaging)
-    ) {
-        Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
-    }
+    foreach ($path in @($temporaryZip,$checksumTemp)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
+    $resolved = [IO.Path]::GetFullPath($staging)
+    if (-not $resolved.StartsWith($temporaryRoot.TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or
+        (Split-Path -Leaf $resolved) -notmatch '^DBBackup-package-[a-f0-9]{32}$') { throw 'Unsafe staging cleanup target.' }
+    if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }

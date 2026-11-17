@@ -1,8 +1,51 @@
 # Histórico de alterações
 
-Todas as alterações relevantes do BackupSeven são registradas neste arquivo. O
+Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
+
+## [1.0.0] - 2026-11-17
+
+### Alterado — incompatível com a linha 0.x
+
+- Produto DBBackup, com entradas genéricas e configuração schema 1.
+- Código compartilhado e estado isolado por instância; removida a identidade
+  fixa do Seven em scripts, setup, arquivos e tarefas agendadas.
+- Modos legados substituídos por trabalhos explícitos e `-All`. Configurações,
+  pendências e archives 0.x não são importados automaticamente.
+
+### Adicionado
+
+- Provedores MySQL 5 (dump normal e fallback geral/granular), SQL Anywhere 17
+  (completo nativo de banco/log sem rotação/truncagem) e diretórios opcionais.
+- Pipeline 7z testado + age obrigatório, destinatários públicos, manifest com
+  hashes/versões, estado de transporte e promoção atômica de bundles.
+- Reenvio preservando bytes/destino, retenção local e logs sanitizados.
+- Setup e secrets compartilhados como mecanismo, arquivos privados por instância,
+  diagnóstico local e reconciliação de tarefas com identidade de configuração.
+- Métricas Grafana Alloy no contrato genérico v0.3.0, checkpoint de último
+  sucesso, deadline por agenda e identificação de publicação degradada.
+- Timeout por ferramenta com encerramento da árvore, streaming do dump e
+  verificações de espaço/reserva antes das etapas maiores.
+- Prazo total por execução (`Execution.RunTimeoutSeconds`), com limite da tarefa
+  agendada derivado dele, e limpeza de Work/Staging de execuções interrompidas.
+- Estimativa automática de espaço (histórico do trabalho ou sonda MySQL),
+  `Retention.KeepLocalPayload`, `Storage.Destination` e resumo de pendências.
+- Menos I/O: diretórios arquivados no lugar, sem cópia para Work; payload em
+  claro apagado antes da criptografia; retenção sem recalcular hashes; uma só
+  leitura do pacote para SHA-256/MD5 e conferência remota por `rclone lsjson`.
+- Pacote DBBackup com lista explícita, manifest interno, SHA-256 e workflow
+  manual de release que verifica o commit antes de publicar.
+
+### Fronteira operacional
+
+- Recovery preparation foi excluído por solicitação do usuário. Restauração,
+  descriptografia de ensaio e validação de banco são processos externos.
+- Não há motor local de recovery/validação iniciado pelo DBBackup; SQL Anywhere
+  usa somente dbbackup, não dbvalid/dbeng/dbsrv.
+- Sucesso não certifica restauração. Os testes de banco/S3/criptografia usam
+  simuladores; nenhuma homologação em produção ou recuperação real é declarada.
+- Build local não publica release/tag nem instala ou altera tarefas existentes.
 
 ## [0.6.0] - 2026-11-16
 

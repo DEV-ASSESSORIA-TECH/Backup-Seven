@@ -1,235 +1,60 @@
-# Arquitetura do BackupSeven
+# Arquitetura DBBackup v1
 
-## Escopo
+## Núcleo compartilhado, estado por instância
 
-O BackupSeven é uma aplicação PowerShell 7 para um único servidor, instalada em
-`C:\TI\Scripts\BackupSeven`. Ela produz dois tipos independentes de backup:
+`Backup.ps1` exige uma configuração e um trabalho (`-Job`) ou todos (`-All`).
+A configuração schema 1 resolve caminhos relativos a sua própria pasta. O núcleo
+controla lock, tentativas, processos, compactação/criptografia, publicação,
+retenção, métricas e código de saída. Os provedores retornam resultados e
+conteúdos; não fazem upload nem declaram sucesso remoto.
 
-- `Database`: dump lógico criado pelo mysqldump e compactado pelo 7-Zip.
-- `Fiscal`: archive da pasta `C:\Seven Sistemas\Fiscal` criado pelo 7-Zip.
+MySQL mantém sua estratégia de dump normal, `--force` e granular por objeto.
+Uma falha pode produzir conteúdo aproveitável e continuar com resultado FAILED;
+DEGRADED exige os dois papéis publicados e nunca conta como último sucesso.
+Directory faz uma cópia de arquivos vivos; não oferece snapshot consistente entre
+arquivos. SQLAnywhere chama somente dbbackup, com ASTART=NO, contra o servidor
+existente: não executa dbvalid, dbeng ou dbsrv. Abertura, recuperação e validação
+do banco ficam fora deste produto.
 
-O modo `Full` solicita os dois tipos. A falha de um tipo não impede a tentativa
-do outro, mas o resultado geral da execução será uma falha.
+## Artefatos e publicação
 
-A aplicação não instala dependências, não administra retenção remota e não
-inclui executáveis de terceiros. A execução do backup não altera tarefas
-agendadas; elas são reconciliadas com a seção `Schedule` pelo
-`Setup-BackupSeven.ps1` (setup interativo ou `-Apply`).
+Cada pacote contém manifesto schema 1, versão do produtor, ferramentas, resultado,
+metadados e inventário de arquivos/tamanhos/SHA-256. O 7z é testado antes do age.
+O servidor usa destinatários públicos, nunca identidades privadas. A criptografia
+é promovida junto ao state.json de uma área de staging para Pending por rename
+atômico. Runtime e Completed precisam estar no mesmo volume.
 
-## Componentes
+O registro mantém hash/tamanho do ciphertext e destino remoto originais. Reenvio
+não renomeia, recriptografa ou redireciona um pacote antigo. Somente após copyto e
+check o conjunto é movido atomicamente a Completed. O transporte CONFIRMED e o
+resultado local SUCCESS/DEGRADED/FAILED são dimensões separadas. Pendências nunca
+são removidas por idade. A retenção exclui pacotes concluídos com seus registros.
 
-| Componente | Contrato |
-| --- | --- |
-| `Setup-BackupSeven.ps1` | Sem parâmetros: perguntar os dados com os valores atuais como padrão e gravar somente o que mudou (`config.psd1`, `Secrets`). Com `-Apply`: usar o `config.psd1` como está. Nos dois casos, aplicar a configuração: desbloquear os arquivos do pacote, criar as pastas, restringir `Secrets`, testar dependências e reconciliar as tarefas com `Schedule`. Não participa da execução do backup. |
-| `Setup.bat` / `Aplicar-Configuracao.bat` | Pedir elevação e executar o setup (`-Apply` no segundo) no PowerShell 7 com `-ExecutionPolicy Bypass`. |
-| `Backup-Seven.ps1` | Validar entrada e configuração, adquirir o bloqueio de execução, coordenar os pipelines solicitados, aplicar retenção e definir o exit code do processo. |
-| `Logging.psm1` | Gravar eventos UTF-8 de uma linha com data, severidade, ID da execução, modo e etapa. Chamadores nunca devem fornecer segredos como mensagens de log. |
-| `Archive.psm1` | Criar um `.7z` único com o paralelismo configurado, rejeitar qualquer exit code não zero do 7-Zip, verificar se a saída não está vazia e executar `7z test`. |
-| `Database.psm1` | Executar mysql/mysqldump, retornar resultado estruturado, enumerar tabelas/views e normalizar nomes de arquivos do fallback granular. |
-| `Fiscal.psm1` | Validar a origem Fiscal e produzir um archive validado por meio de `Archive.psm1`. |
-| `Storage.psm1` | Enviar um archive ou log com `rclone copyto` e validá-lo com `rclone check --one-way`. |
-| `Monitoring.psm1` | Formatar o estado de um backup no contrato genérico de backups (textfile do Grafana Alloy) e gravá-lo de forma atômica. Não cria a pasta nem decide o estado. |
-| `Schedule.psm1` | Normalizar e validar `Schedule`, calcular o maior intervalo entre execuções por tipo e gerar o XML de registro de cada tarefa com sua impressão digital. Não acessa o Agendador. |
+## Processos, capacidade e observabilidade
 
-Os módulos expõem somente as funções necessárias ao script principal. Falhas
-operacionais esperadas são lançadas como erros terminantes e tratadas no limite
-de cada pipeline.
+Um executor comum captura stderr e drena stdout de forma assíncrona; dumps são
+transmitidos diretamente ao arquivo. Timeout encerra a árvore do processo. As
+estimativas de espaço e a reserva são conferidas antes das etapas maiores, sem
+reservar espaço contra outros processos ou prometer caber um banco que cresceu.
+Tarefas têm também limite total de 12 horas.
 
-## Estado durante a execução
+O monitoramento observa pacotes normais confirmados, preserva o último sucesso
+em checkpoint privado antes da retenção e grava o contrato Alloy atomicamente.
+`service` identifica a aplicação protegida; `backup_id`, o conjunto de dados.
+Erros de métricas são avisos e não modificam o resultado do backup. Lock ocupado
+não é tentativa e não regrava métricas. O prazo é ancorado no último sucesso,
+sem avançar a cada falha. A pasta de métricas pertence ao Alloy.
 
-O diretório configurado em `Paths.RuntimeRoot` contém:
+## Setup, segurança e atualização
 
-```text
-Runtime\
-├── Pending\<Database|Fiscal>\yyyy\MM\
-└── Work\<run-id>\
-```
+Setup aplica configurações/ACLs e reconcilia somente tarefas com a identidade do
+caminho de configuração da instância. Plan é somente leitura. Controles impedem
+sobreposição de estado/Secrets e identidades de métricas entre instâncias sob a
+mesma raiz. Credenciais nativas em texto ficam em diretórios/arquivos privados,
+restritos a SYSTEM e Administradores; não entram nos argumentos dos processos.
 
-Archives confirmados ficam na raiz independente `Paths.CompletedRoot`, sem
-pastas de ano e mês:
-
-```text
-Completed\
-├── Database\<archive>
-└── Fiscal\<archive>
-```
-
-Os logs ficam fora de `Runtime`, diretamente no diretório configurado:
-
-```text
-Logs\
-└── BackupSevenLog_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_<Database|Fiscal|Full>_<run-id>.log
-```
-
-Não é necessário banco de estado externo:
-
-- um arquivo em `Work` é temporário e deve ser limpo após a execução;
-- um arquivo em `Pending` é válido localmente, mas não foi confirmado no remoto;
-- as pastas de ano e mês de `Pending\<tipo>` que ficam vazias são removidas no
-  fim de cada execução (`Cleanup/Pending`), de baixo para cima; arquivos e a
-  pasta do tipo nunca são removidos, e uma falha aqui só gera `WARN`;
-- um arquivo em `Completed` foi enviado e confirmado remotamente;
-- somente arquivos em `Completed` participam da retenção local por idade.
-
-Todo archive de banco contém `manifest.json`, que descreve status, execução,
-estratégia, arquivos e erros. Ele documenta o conteúdo; o estado operacional de
-upload continua sendo representado pelos diretórios `Pending` e `Completed`.
-
-Os valores de retenção são inteiros de pelo menos um dia. O timestamp usado para
-avaliar a idade de archives e logs vem do nome controlado do arquivo, não de
-`LastWriteTime`.
-
-Uma nova execução tenta reenviar arquivos pendentes dos tipos solicitados antes
-de criar novos artefatos. Uma falha nessa nova tentativa não impede a criação de
-outro backup local.
-
-## Contrato dos artefatos
-
-Os nomes usam UTC e são únicos:
-
-```text
-BackupSeven_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_<Database|Fiscal>_<run-id>.7z
-BackupSeven_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_Database_<run-id>_DEGRADED.7z
-BackupSeven_<yyyy-MM-dd>_<HHmmssZ>_<InstanceName>_Database_<run-id>_GRANULAR_DEGRADED.7z
-```
-
-O primeiro nome representa o fluxo normal. Quando o dump normal falha, o
-segundo guarda o dump geral com `--force`; o terceiro guarda os dumps por tabela
-e view e os marcadores `_FAILED.txt`. Um fallback só é considerado completo
-quando ambos são criados, validados e confirmados remotamente.
-
-Os objetos remotos usam o mesmo nome em:
-
-```text
-<RemoteRoot>/<InstanceName>/<Database|Fiscal>/yyyy/MM/dd/<archive>
-<RemoteRoot>/<InstanceName>/Logs/yyyy/MM/dd/<log>
-```
-
-Um archive passa de `Pending` para `Completed` somente depois de um
-`rclone copyto` e de um `rclone check --one-way` limitado ao arquivo. O
-BackupSeven não executa `rclone sync` nem remove objetos remotos. O log final é
-publicado pelo mesmo contrato de `copyto` e `check` quando o armazenamento já
-foi validado naquela execução.
-
-O `rclone check` compara tamanho e o melhor hash comum informado pelos backends.
-Se o provedor S3 não oferecer hash compatível, essa limitação deve ser validada
-durante a homologação; baixar novamente todo o objeto não faz parte da versão
-inicial.
-
-## Configuração e credenciais
-
-O repositório mantém `src\config.example.psd1`,
-`src\Secrets\mysql-backup.example.cnf` e
-`src\Secrets\rclone.example.conf`, sempre sem credenciais reais. Durante o
-empacotamento, eles são copiados para os nomes operacionais `config.psd1`,
-`Secrets\mysql-backup.cnf` e `Secrets\rclone.conf`. São estruturas para
-preenchimento manual; o arquivo de opções do MySQL não é gerado pelo servidor.
-
-As credenciais do banco ficam em um arquivo externo de opções do MySQL indicado
-por `Database.DefaultsExtraFile`. As credenciais S3 ficam na configuração
-externa do rclone indicada por `Storage.ConfigPath`. Ambos os arquivos exigem
-ACLs NTFS restritas.
-
-`Database.ExtraArguments` contém `--skip-events` na configuração inicial porque
-a conta disponível não possui a permissão `EVENT`. Esse é um compromisso
-operacional explícito: o dump não inclui eventos agendados do MySQL. O argumento
-pode ser removido quando a permissão existir e o resultado for homologado.
-
-## Contrato de compactação
-
-`Archive.CompressionLevel` é enviado ao 7-Zip por `-mx`. O valor inicial `5` é
-o nível normal. `Archive.CpuLimitPercent` é convertido em
-`floor(processadores_lógicos * percentual / 100)`, com mínimo de uma thread, e
-enviado por `-mmt`. Trata-se de um limite aproximado do paralelismo do 7-Zip,
-não de uma cota rígida de CPU do processo ou do sistema.
-
-## Contrato de monitoramento
-
-A seção opcional `Monitoring` liga a gravação do estado de cada tipo em
-`<TextfileDirectory>\<Service>__<BackupId>.prom`, no contrato genérico de
-backups do repositório `grafana` (`contracts/prometheus/backup.yml`, job
-`integrations/backup`). O script principal decide o estado; o módulo só formata
-e grava.
-
-- O arquivo é gravado no `finally` de cada pipeline, com o status `SUCCESS`,
-  `DEGRADED` ou `FAILED`. Uma falha antes dos pipelines (exit code `2` com a
-  configuração já lida e o log inicializado) grava `FAILED` para os tipos
-  solicitados. O lock ocupado (exit code `3`) não grava.
-- O último sucesso é o maior entre o archive normal mais recente em
-  `Completed\<tipo>` (timestamp do nome, que é o início do pipeline) e o valor
-  do arquivo anterior. Assim o estado continua sem banco externo e não regride
-  quando a retenção local remove archives.
-- O prazo do próximo sucesso é a primeira execução do `Schedule` que cobre o
-  tipo depois do último sucesso (horário local do servidor, convertido para
-  Unix). Ancorado no sucesso, não avança quando uma execução falha; sem sucesso
-  conhecido, o prazo do arquivo anterior é mantido (ou é a próxima execução, na
-  primeira gravação). Sem `Schedule`, não é publicado.
-- `criticality` (`alta` ou `baixa`, por tipo) vai em `backup_info`.
-- Gravar o estado nunca altera o resultado: qualquer erro vira `WARN` na etapa
-  `<tipo>/Monitoring`.
-- A pasta pertence à instalação do Alloy, que define a ACL; o BackupSeven nunca
-  a cria.
-
-## Logs e exit codes
-
-Os registros de log têm o seguinte formato:
-
-```text
-2026-09-03 10:30:00 [INFO] [run-id] [Database/Dump] mensagem
-```
-
-O arquivo local fica diretamente em `Paths.LogRoot`, sem hierarquia de datas.
-O timestamp do nome é UTC; as linhas usam a hora local vigente do servidor para
-facilitar a auditoria. O modo não é repetido quando a etapa já o contém, por
-exemplo, `Database/Dump` em vez de `Database/Database/Dump`.
-
-Os exit codes são intencionalmente poucos e estáveis:
-
-| Código | Significado |
-| ---: | --- |
-| 0 | Todo o trabalho solicitado, novas tentativas pendentes e retenção tiveram sucesso. |
-| 1 | Falha no dump, compactação, envio de backup/log ou validação remota. |
-| 2 | Chamada, configuração, dependência, diretório ou permissão inválida. |
-| 3 | Outra execução do BackupSeven detém o bloqueio. |
-| 4 | Os backups tiveram sucesso, mas a limpeza ou retenção falhou. |
-| 5 | O fallback completo do banco foi publicado como `DEGRADED`. |
-
-## Contrato de agendamento
-
-A seção `Schedule` do `config.psd1` é a fonte da verdade das tarefas. Cada
-item vira uma tarefa na pasta `\BackupSeven\` do Agendador, registrada por XML
-(o cmdlet não oferece gatilho mensal):
-
-- gatilho de calendário diário, semanal ou mensal no horário local do servidor;
-- execução como SYSTEM, `HighestAvailable`, sem iniciar segunda instância,
-  iniciando quando possível após um horário perdido e limitada a 12 horas;
-- ação `pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
-  Backup-Seven.ps1 -Mode <modo>` (os scripts do pacote não são assinados);
-- descritor de segurança da pasta e das tarefas com acesso só de SYSTEM e
-  Administradores (`D:P(A;;FA;;;SY)(A;;FA;;;BA)`).
-
-A descrição de cada tarefa contém `[cfg:<hash>]`, impressão digital da
-definição gerada a partir da configuração. A reconciliação cria as tarefas
-ausentes, regrava as de impressão digital diferente ou com estado ativo
-divergente, remove as da pasta que não estão na configuração e remove tarefas
-fora da pasta que executam o `Backup-Seven.ps1` (versões anteriores). O plano é
-mostrado e só aplicado com confirmação. Sem a seção `Schedule`, nenhuma tarefa
-é gerenciada.
-
-O monitoramento usa `Schedule` para derivar o intervalo esperado de cada tipo
-quando `Monitoring.ExpectedIntervalHours` não está definido. Um `Schedule`
-inválido nunca impede o backup: só deixa o intervalo sem valor, com `WARN`.
-
-## Distribuição
-
-`scripts/package.ps1` monta o ZIP por uma lista fechada de arquivos, reabre o
-resultado para validar seu conteúdo e gera o arquivo SHA-256 correspondente.
-O empacotador renomeia os três modelos para seus nomes de produção. O pacote leva
-o `RUNBOOK.md` (operação); `README.md`, `ARCHITECTURE.md`, `CHANGELOG.md`,
-credenciais reais, runtime, logs, testes e workflows não entram. O `Secrets\rclone.conf` incluído é somente o modelo sanitizado.
-Uma atualização deve preservar os arquivos operacionais já preenchidos antes de
-extrair uma nova versão.
-
-O CI executa parsing, PSScriptAnalyzer, Pester e empacotamento. O release é
-manual, usa `VERSION` como fonte de verdade, recusa uma versão cuja tag ou
-release já exista e publica o ZIP acompanhado de SHA256.
+Alterar código compartilhado afeta a próxima execução de todas as instâncias que
+o usam. Atualize com os trabalhos parados e preserve o estado operacional.
+A distribuição é uma lista explícita de fontes e modelos, com manifest/checksum.
+A linha 0.x não é importada ou desativada automaticamente. Recovery e testes de
+restauração não integram runtime, setup, agendador ou workflow de release.

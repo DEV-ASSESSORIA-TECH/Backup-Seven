@@ -1,99 +1,76 @@
 name: Release
-
 on:
   workflow_dispatch:
-
 permissions:
   contents: write
-
+concurrency:
+  group: dbbackup-release
+  cancel-in-progress: false
 jobs:
   release:
     runs-on: windows-latest
-
     defaults:
       run:
         shell: pwsh
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Require the default release branch
+        run: |
+          # Releases are cut only from main; a dispatch from any other ref fails
+          # visibly instead of tagging an unreviewed commit.
+          if ($env:GITHUB_REF -cne 'refs/heads/main') { throw "Release must be dispatched from main (got $env:GITHUB_REF)." }
+      - name: Checkout selected commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-
-      - name: Read and validate version
+      - name: Install verification dependencies
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+      - name: Validate version and release history
         run: |
           $version = (Get-Content ./VERSION -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
-              throw "VERSION must use X.Y.Z format: $version"
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release VERSION.' }
+          if (-not (Select-String -LiteralPath ./CHANGELOG.md -Pattern "^## \[$([regex]::Escape($version))\]" -Quiet)) {
+            throw 'CHANGELOG is missing the release section.'
           }
-
-          if (-not (Select-String -LiteralPath ./CHANGELOG.md -Pattern "\[$([regex]::Escape($version))\]" -Quiet)) {
-              throw "CHANGELOG.md has no entry for version $version."
+          "DBBACKUP_VERSION=$version" >> $env:GITHUB_ENV
+          "DBBACKUP_TAG=v$version" >> $env:GITHUB_ENV
+      - name: Verify source and package contracts
+        run: ./scripts/verify.ps1
+      - name: Build verified release package
+        run: |
+          $package = & ./scripts/package.ps1
+          $recorded = ((Get-Content "$($package.FullName).sha256" -Raw).Trim() -split '\s+')[0]
+          if ($recorded -cne (Get-FileHash $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()) {
+            throw 'Release archive checksum mismatch.'
           }
-
-          "VERSION=$version" >> $env:GITHUB_ENV
-          "TAG=v$version" >> $env:GITHUB_ENV
-          "ZIP_PATH=dist/BackupSeven-$version.zip" >> $env:GITHUB_ENV
-
-      - name: Ensure tag and release do not exist
+      - name: Ensure tag and release are absent
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $PSNativeCommandUseErrorActionPreference = $false
-
-          git rev-parse --verify --quiet "refs/tags/$env:TAG" | Out-Null
-          $tagCheckExitCode = $LASTEXITCODE
-          if ($tagCheckExitCode -eq 0) {
-              throw "Tag $env:TAG already exists."
+          foreach ($resource in @("git/ref/tags/$env:DBBACKUP_TAG", "releases/tags/$env:DBBACKUP_TAG")) {
+            $exists = $false
+            try {
+              $null = Invoke-WebRequest -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/$resource" -Headers @{
+                Authorization = "Bearer $env:GH_TOKEN"
+                Accept = 'application/vnd.github+json'
+              }
+              $exists = $true
+            }
+            catch {
+              $status = $_.Exception.Response.StatusCode
+              if ([int] $status -ne 404) { throw "GitHub existence check failed (HTTP $status)." }
+            }
+            if ($exists) { throw "Tag/release already exists: $resource" }
           }
-          if ($tagCheckExitCode -ne 1) {
-              throw "Unable to check tag $env:TAG (exit code $tagCheckExitCode)."
-          }
-
-          gh release view $env:TAG *> $null
-          $releaseCheckExitCode = $LASTEXITCODE
-          if ($releaseCheckExitCode -eq 0) {
-              throw "Release $env:TAG already exists."
-          }
-
-          Write-Host "Tag and release $env:TAG are available."
-          exit 0
-
-      - name: Build production package
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $packageScript = './scripts/package.ps1'
-          if (-not (Test-Path -LiteralPath $packageScript -PathType Leaf)) {
-              throw "Package script was not found: $packageScript"
-          }
-
-          Write-Host "Building package from $(Get-Location)..."
-          & $packageScript
-
-          $archive = Get-Item -LiteralPath $env:ZIP_PATH -ErrorAction Stop
-          $checksumPath = "$($archive.FullName).sha256"
-          if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
-              throw "Package checksum was not created: $checksumPath"
-          }
-
-          $recordedHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+')[0]
-          $actualHash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($recordedHash -ne $actualHash) {
-              throw "SHA256 validation failed for $($archive.Name)."
-          }
-
-          Write-Host "Package created: $($archive.FullName)"
-          Write-Host "SHA256: $actualHash"
-
-      - name: Create GitHub release
+      - name: Publish release for the verified commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $PSNativeCommandUseErrorActionPreference = $true
-          gh release create `
-              $env:TAG `
-              $env:ZIP_PATH `
-              "$env:ZIP_PATH.sha256" `
-              --target $env:GITHUB_SHA `
-              --title "BackupSeven $env:VERSION" `
-              --generate-notes
+          $zip = "dist/DBBackup-$env:DBBACKUP_VERSION.zip"
+          gh release create $env:DBBACKUP_TAG $zip "$zip.sha256" --target $env:GITHUB_SHA --title "DBBackup $env:DBBACKUP_VERSION" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release creation failed.' }

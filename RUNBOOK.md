@@ -1,191 +1,250 @@
-# BackupSeven - Runbook
+# DBBackup — runbook v1.0.0
 
-Procedimentos de operação no servidor. Instalação padrão em
-`C:\TI\Scripts\BackupSeven`. Como o sistema funciona está no `README.md` do
-repositório.
+## Dependências e instalação
 
-| Arquivo | Para quê |
-| --- | --- |
-| `Setup.bat` | Instalação e revisão: pergunta os dados, grava `config.psd1` e `Secrets` e aplica. |
-| `Aplicar-Configuracao.bat` | Aplica o `config.psd1` como está (agendamentos, permissões, testes). Não pergunta dados. |
-| `config.psd1` | Toda a configuração, inclusive os agendamentos (`Schedule`). |
-| `Secrets\` | Credenciais do MySQL e do S3. Acesso só para SYSTEM e Administradores. |
-| `Logs\` | Um log por execução. |
+Windows e PowerShell 7.2+; 7-Zip, age e rclone instalados separadamente. MySQL
+precisa mysql/mysqldump 5.x compatíveis com a origem. SQL Anywhere precisa somente
+dbbackup 17 e suas bibliotecas nativas; não é necessário instalar um motor de
+restauração no servidor. O DBBackup não instala essas dependências.
 
-Os dois `.bat` pedem elevação (UAC) e rodam o PowerShell 7 com
-`-ExecutionPolicy Bypass`. Não é preciso abrir terminal.
-
-## 1. Instalação nova
-
-Pré-requisitos no servidor: PowerShell 7, 7-Zip, rclone, `mysql.exe` e
-`mysqldump.exe` compatíveis com o MySQL do Seven, e a credencial do S3. Para o
-monitoramento, o Grafana Alloy (perfil servidor) instalado pelo `alloyctl`.
-
-1. Extraia o ZIP em `C:\TI\Scripts\BackupSeven`.
-2. Dê dois cliques em **`Setup.bat`** e responda. Enter mantém o valor entre
-   colchetes.
-   - **Instância**: prefixo no S3 (`<bucket>/<instância>/...`) e nos nomes dos
-     arquivos.
-   - **Agendamentos**: padrão Full diário às 12:00 e 19:00. Para mudar, veja a
-     seção 3.
-3. Confira o plano das tarefas agendadas e confirme.
-4. Aceite o **backup de teste** no final e confira o exit code `0`.
-
-Resultado esperado:
-
-```text
-[ OK ] MySQL: conectado ao banco ...
-[ OK ] S3: ... acessivel                 (ou [AVISO] sem s3:ListBucket, normal)
-[ OK ] Alloy: gravacao em ...            (ou [AVISO] pasta ainda nao existe)
-[ OK ] Criada: \BackupSeven\Full Daily 12h00
-[ OK ] Criada: \BackupSeven\Full Daily 19h00
-```
-
-## 2. Atualização de versão
-
-O ZIP traz `config.psd1` e `Secrets\` como modelos. **Não extraia por cima.**
-
-1. Extraia o ZIP novo em uma pasta temporária, por exemplo
-   `C:\TI\Temp\BackupSeven-<versão>`.
-2. Copie tudo, exceto a configuração e as credenciais:
-
-   ```bat
-   robocopy C:\TI\Temp\BackupSeven-<versão> C:\TI\Scripts\BackupSeven /E /XF config.psd1 /XD Secrets
-   ```
-
-3. Rode **`Setup.bat`** e responda só com Enter: ele mantém os valores e
-   credenciais, inclui o que a versão nova precisar e aplica.
-4. Apague a pasta temporária.
-
-Se a versão anterior for a 0.4.x, o setup inclui a seção `Schedule` com as
-12:00 e 19:00, cria as tarefas em `\BackupSeven\` e mostra as tarefas antigas
-(`\ASSESSORIA SCRIPTS\BackupSeven - Full - ...`) para remoção. Confirme.
-
-## 3. Alterar os agendamentos
-
-1. Abra `config.psd1` e edite a seção `Schedule`.
-2. Rode **`Aplicar-Configuracao.bat`**.
-3. Confira o plano (`+ criar`, `~ alterar`, `- remover`) e confirme.
-
-Cada item é um horário ou uma hashtable:
+1. Confira o SHA-256 do ZIP contra o `.zip.sha256` recebido por canal confiável.
+2. Extraia em pasta nova, por exemplo `C:\TI\Scripts\DBBackup`.
+3. Abra PowerShell elevado nessa pasta e execute o setup por instância:
 
 ```powershell
-Schedule = @{
-    Tasks = @(
-        '12:00'                     # Full, diario
-        '19:00'
-        @{ Mode = 'Database'; Frequency = 'Weekly'; Days = @('Saturday'); At = '03:00' }
-        @{ Mode = 'Fiscal'; Frequency = 'Monthly'; DaysOfMonth = @(1, 'Last'); At = '22:00' }
-        @{ At = '08:00'; Enabled = $false }        # registrada, desativada
-    )
+.\Setup.ps1 -Provider MySQL -InstanceName MySQL
+.\Setup.ps1 -Provider SQLAnywhere -InstanceName SQLAnywhere
+```
+
+Também há `Setup.bat` e `Aplicar-Configuracao.bat`, que solicitam elevação e
+perguntam a instância/configuração interativamente. Eles usam
+`%ProgramFiles%\PowerShell\7\pwsh.exe` e, se não existir, o `pwsh.exe` do PATH.
+Prefira o instalador MSI: o PowerShell da Microsoft Store fica em caminho
+versionado que a tarefa (SYSTEM) pode não executar, e o setup avisa nesse caso. O ZIP não contém configurações
+operacionais: apenas os modelos `Templates/<provedor>/config.example.psd1`.
+
+```text
+DBBackup/
+  Backup.ps1, Setup.ps1, Diagnose.ps1
+  Modules/, Templates/, VERSION
+  Instances/
+    MySQL/
+      config.psd1, Secrets/, Runtime/, Completed/, Logs/
+    SQLAnywhere/
+      config.psd1, Secrets/, Runtime/, Completed/, Logs/
+```
+
+## Configuração e credenciais
+
+O setup pergunta caminhos das ferramentas, banco e destino rclone. Cria somente
+secrets ausentes; nunca substitui credenciais existentes. Para alterá-las, edite
+os arquivos privados e reaplique a configuração. Todo arquivo de credenciais deve
+ficar dentro de Secrets da própria instância. Os arquivos não são um cofre
+criptografado: contêm opções nativas protegidas por ACL NTFS para SYSTEM e
+Administradores. Não os inclua em relatórios ou no repositório.
+
+MySQL usa `Secrets/mysql.cnf`, seção `[client]`, com host, port, user e password.
+O padrão `--skip-events` significa que eventos MySQL não estão no dump; mudar
+isso exige permissão correspondente e homologação externa. O setup não cria
+usuários nem concede privilégios nos bancos.
+
+SQL Anywhere usa `Secrets/sqlanywhere.options`, uma linha (substitua os valores):
+
+```text
+-c "UID='REPLACE_USER';PWD='REPLACE_PASSWORD';HOST='REPLACE_HOST:2638';DBN='REPLACE_DATABASE'"
+```
+
+UID, PWD, HOST e DBN são obrigatórios; DBN corresponde a Database.Name. SERVER e
+CHARSET são opcionais. Para servidor local por memória compartilhada, SERVER
+(ou ENG) pode substituir HOST; um dos dois é obrigatório. DSN, parâmetros de
+startup e flags de truncagem/rotação não são aceitos nesse arquivo. Valores não
+podem conter aspas duplas ou quebras de linha; aspas simples internas são
+duplicadas. São esperados ao menos um .db (principal e dbspaces adicionais) e um
+.log não vazios. A rotina não abre a cópia do banco. Em falha do dbbackup, a
+saída da ferramenta vai para o log sem a senha.
+
+S3 usa `Secrets/rclone.conf`; o destino tem forma `remote:bucket/prefix`.
+O fluxo usa copyto e, em seguida, `rclone lsjson --hash` da pasta datada para
+conferir tamanho e MD5 do objeto enviado (sem reler o arquivo local nem baixar o
+objeto), sem sync ou remoção remota e sem exigir listagem do bucket inteiro. Configurar um remote não comprova acesso ao bucket. Mantenha
+os remotes antigos enquanto houver pendências que os referenciem. O setup
+pergunta o provedor S3 do rclone (AWS, Wasabi, Minio...) e um endpoint opcional.
+`Storage.Destination` (padrão `s3`) é apenas o rótulo de destino nas métricas.
+Configure a expiração remota com regras de ciclo de vida do bucket.
+
+`Secrets/recipients.txt` contém um destinatário age público nativo por linha;
+comentários iniciados por # são aceitos. O setup valida os destinatários antes
+de gravar o arquivo e pede novamente (até três tentativas). Identidades privadas ficam no cofre ou
+no processo externo de recuperação. Alterar destinatários afeta somente novos
+pacotes; guarde as identidades necessárias aos antigos. O projeto não cria nem
+usa chaves de ensaio/recuperação no servidor.
+
+## Trabalhos, limites e monitoramento
+
+Cada instância tem um trabalho `database`, sempre completo. Diretórios adicionais
+são opcionais e independentes:
+
+```powershell
+Directories = @(@{ Id='documents'; SourcePath='D:\Documents' })
+Execution = @{
+    ToolTimeoutSeconds = 21600
+    RunTimeoutSeconds = 39600
+    ReserveBytes = 1073741824
+    EstimatedDatabaseBytes = 0
 }
 ```
 
-| Chave | Valores | Padrão |
-| --- | --- | --- |
-| `At` | `HH:mm`, 24 h, hora local do servidor | obrigatório |
-| `Mode` | `Full`, `Database`, `Fiscal` | `Full` |
-| `Frequency` | `Daily`, `Weekly`, `Monthly` | `Daily` |
-| `Days` | `Weekly`: `Monday` ... `Sunday` | - |
-| `DaysOfMonth` | `Monthly`: `1` a `31` ou `'Last'` | - |
-| `Name` | nome da tarefa no Agendador | `<Mode> <Frequency> <HHhMM>` |
-| `Enabled` | `$true` / `$false` | `$true` |
+Fontes não podem incluir a instância ou seus diretórios operacionais. Links são
+rejeitados. Diretórios vivos não têm consistência de snapshot. A pasta é lida no
+lugar (sem cópia para Work) e vai para `content/` dentro do pacote; um arquivo
+alterado durante a execução pode diferir do hash do manifest. Depois que o 7z é
+testado, o conteúdo em claro de Work é apagado antes da criptografia. A retenção
+decide pelo state.json e pelo tamanho, sem recalcular o hash de cada pacote. Com
+`EstimatedDatabaseBytes = 0`, a estimativa do banco vem do último payload
+completo do trabalho (+25%); sem histórico, o MySQL consulta o tamanho em
+information_schema (+25%). O SQL Anywhere não tem sonda: na primeira execução
+só a reserva é verificada e o log registra um aviso; informe um valor para
+evitar isso. Antes do 7z e do age, usa-se o
+tamanho já conhecido, margem de 5%, 1 MiB e reserva. Não há reserva exclusiva de
+disco; outros processos e crescimento dos dados podem consumir o espaço.
 
-- As tarefas ficam na pasta **`\BackupSeven\`** do Agendador, visível só para
-  administradores. Rodam como SYSTEM.
-- A configuração é a fonte da verdade: tarefa editada à mão no Agendador
-  volta ao que está no `config.psd1` quando a configuração muda. Tarefa que
-  sai da configuração é removida (com aviso e confirmação).
-- Duas tarefas no mesmo horário geram aviso: só uma roda, a outra termina com
-  exit code `3`.
-- O alerta de atraso do backup acompanha os horários sozinho: não há intervalo
-  para configurar.
-
-## 4. Trocar credenciais
-
-- **Senha do MySQL ou chave do S3**: rode `Setup.bat` e responda `n` em
-  "Credencial ... já preenchida. Manter?".
-- Teste sem mudar nada: `Aplicar-Configuracao.bat`.
-
-## 4.1. Criticidade dos backups
-
-Em `config.psd1`, `Monitoring.Criticality` define, por tipo, se o backup é
-`alta` (padrão) ou `baixa`. Com `baixa`, os alertas do backup descem um nível
-(crítico vira warning, warning vira info). Vale na próxima execução, sem
-aplicar nada:
+Cada processo externo tem timeout próprio (padrão 6 horas); expiração encerra sua
+árvore. `RunTimeoutSeconds` (padrão 11 horas) é o prazo da execução inteira:
+cada ferramenta é encurtada ao tempo restante e nenhum trabalho começa depois
+dele, de modo que a falha é registrada nas métricas e Work é limpo. A tarefa
+agendada recebe esse prazo arredondado para horas mais uma hora (12 horas no
+padrão); reaplique a configuração depois de alterá-lo. Esses limites não tornam
+um backup interrompido válido; a próxima execução tenta as pendências já
+completas, não arquivos parciais de Work.
 
 ```powershell
 Monitoring = @{
-    ...
-    Criticality = @{ Database = 'alta'; Fiscal = 'baixa' }
+    Enabled = $true
+    Service = 'erp'
+    TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup'
+    BackupIds = @{ database='mysql-database'; documents='documents' }
+    Criticality = @{ database='alta'; documents='baixa' }
 }
 ```
 
-## 5. Conferir se está funcionando
+Service é o sistema protegido, não MySQL/SQLAnywhere ou DBBackup. BackupIds são
+estáveis por conjunto; o padrão omitido é `<instância>-<trabalho>` em minúsculas.
+Evite reutilizar a identidade para outros dados. O setup verifica colisões entre
+instâncias da mesma raiz. ExpectedIntervalHours pode substituir o intervalo da
+agenda por trabalho. Alloy cria sua pasta; DBBackup nunca a cria. SYSTEM escreve
+nela; outra conta precisa das permissões do Alloy Backup Writers.
 
-1. **Último log**: `Logs\`, o arquivo mais recente. Deve terminar com
-   `Execution completed successfully.`
-2. **Agendador de Tarefas** → pasta `BackupSeven` → coluna "Resultado da
-   última execução": `0x0`.
-3. **S3**: `<bucket>/<instância>/Database|Fiscal/<ano>/<mês>/<dia>/`.
-4. **Grafana** (Explore, Prometheus):
+Arquivos `<service>__<backup_id>.prom` seguem o contrato genérico Grafana. Último
+sucesso considera somente FULL normal confirmado, no ponto de recuperação
+original. Pacotes degradados não avançam sucesso. O checkpoint privado em
+Runtime/Monitoring conserva esse histórico após retenção ou falta da pasta Alloy.
+Falha ao observar ou gravar métricas vai para o log e resulta em código 4 quando
+nenhum trabalho falhou. Não apague checkpoints durante atualização.
 
-   ```promql
-   {job="integrations/backup", service="seven", __name__=~"backup_last_attempt_success|backup_last_success_timestamp_seconds"}
-   ```
+## Diagnosticar, planejar e aplicar agenda
 
-## 6. Exit codes
+```powershell
+.\Diagnose.ps1 -ConfigPath .\Instances\MySQL\config.psd1
+.\Setup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Plan
+.\Setup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Apply
+```
 
-| Código | Significado | O que fazer |
-| ---: | --- | --- |
-| 0 | Sucesso | - |
-| 1 | Falha no dump, compactação, envio ou validação | Ver a etapa no log (`[Database/Upload]`, etc.). Archive não enviado fica em `Runtime\Pending` e é reenviado na próxima execução. |
-| 2 | Configuração, dependência ou permissão inválida | Rodar `Aplicar-Configuracao.bat`: os testes apontam o item. |
-| 3 | Outra execução em andamento | Normal se coincidir com outra tarefa; ver avisos de horário. |
-| 4 | Backups ok, limpeza ou retenção falhou | Ver `Retention/*` no log. |
-| 5 | Banco publicado como `DEGRADED` | Dump normal falhou; ver o `manifest.json` e os `_FAILED.txt` do archive `GRANULAR_DEGRADED`. |
+Use `-InstancesRoot` consistentemente se as configurações estiverem fora da raiz
+padrão. Diagnose é local: configuração, ACL de secrets e das pastas de estado,
+arquivos, ferramentas, espaço e remotes declarados. Não conecta ao banco, não testa recuperação e não grava.
+Plan também não cria diretórios, altera ACL ou aplica tarefas.
 
-## 7. Problemas comuns
+```powershell
+Schedule = @{ Tasks = @(
+    @{ Name='database-daily'; Job='database'; At='19:00'; Frequency='Daily' }
+    @{ Name='documents-weekly'; Job='documents'; At='03:00'; Frequency='Weekly'; Days=@('Saturday') }
+) }
+```
 
-| Sintoma | Causa | Solução |
-| --- | --- | --- |
-| `... is not digitally signed` | Arquivos de ZIP baixado | Use os `.bat` (já usam Bypass e desbloqueiam os arquivos). |
-| `[AVISO] S3: ... sem permissao de listar` | Conta do S3 sem `s3:ListBucket` | Normal; o backup não lista o bucket. |
-| `[AVISO] Alloy: ... ainda nao existe` | Alloy sem a leitura de backups | `alloyctl` → **[1] Reaplicar**. O estado passa a ser gravado sem novo setup. |
-| Log com `[WARN] [.../Monitoring]` | Pasta do Alloy ausente ou sem permissão | Mesmo item acima. Não afeta o backup. |
-| Tarefa não aparece | Pasta `\BackupSeven\` só aparece para administradores | Abrir o Agendador como administrador. |
-| Arquivos acumulando em `Runtime\Pending` | Envio ao S3 falhando | Ver `[*/Upload]` no log; nunca apagar `Pending` antes de entender. |
+Há agenda diária, semanal e mensal (DaysOfMonth 1..31 ou Last). Cada tarefa usa
+trabalho explícito e roda como SYSTEM em `\DBBackup\<instância>\`. Apply mostra o
+plano e exige SIM. Tarefas de outra configuração causam conflito. Sem Schedule,
+a agenda é ignorada; Tasks vazio remove somente as tarefas próprias. Tarefas da
+mesma instância no mesmo horário disputam o lock; escolha horários distintos ou
+execute `-All` manualmente. Antes de remover um trabalho, resolva suas pendências
+e aposente seu arquivo .prom deliberadamente.
 
-## 8. Restaurar um backup
+## Execução e interpretação
 
-Faça em um ambiente de teste sempre que possível.
+```powershell
+.\Backup.ps1 -ConfigPath .\Instances\MySQL\config.psd1 -Job database
+.\Backup.ps1 -ConfigPath .\Instances\SQLAnywhere\config.psd1 -All
+```
 
-1. Baixe o archive (local em `Completed\` ou do S3):
+Cada instância tem um lock; outras podem rodar simultaneamente. A falha de um
+trabalho não impede os demais. O banco/log, dump e 7z ficam sem criptografia em
+Work durante a execução, sob ACL privada. Em término normal, Work é limpo; após
+uma interrupção, a execução seguinte da instância remove, sob o lock, as pastas
+de execução de Work e de Staging deixadas para trás (inclusive o arquivo de
+conexão temporário do SQL Anywhere) e registra o que removeu. Itens com outros
+nomes não são tocados e geram código 4. Apagar não equivale a apagamento seguro.
+Nunca limpe Pending automaticamente para liberar espaço; cada execução registra
+quantos pacotes e bytes aguardam envio.
 
-   ```bat
-   "C:\Program Files\rclone\rclone.exe" copy "s3:<bucket>/<instancia>/Database/2026/11/14/<arquivo>.7z" C:\TI\Restore --config C:\TI\Scripts\BackupSeven\Secrets\rclone.conf
-   ```
+As pastas Runtime, Completed e Logs recebem ACL privada (SYSTEM e
+Administradores) apenas quando o DBBackup as cria. Uma execução nunca altera as
+permissões de uma pasta existente. O Apply só protege uma pasta existente vazia
+e recusa uma pasta com conteúdo e permissões de terceiros; use pastas dedicadas.
 
-2. Extraia:
+Pending guarda o pacote criptografado e state.json; reenvia os mesmos bytes ao
+destino registrado, mesmo que a configuração tenha mudado. Completed indica
+transporte confirmado e é sujeito à retenção local por idade; o registro pode
+continuar marcado DEGRADED/FAILED. Um pacote ou log ilegível é registrado e
+ignorado, sem interromper a retenção dos demais (código 4). Com
+`Retention.KeepLocalPayload = $false`, a cópia criptografada local é apagada
+logo após o envio confirmado e Completed guarda só state.json (tamanho e hash). Logs operacionais são sanitizados e enviados
+como texto separado. Retenção remota é responsabilidade do bucket.
 
-   ```bat
-   "C:\Program Files\7-Zip\7z.exe" x C:\TI\Restore\<arquivo>.7z -oC:\TI\Restore\<arquivo>
-   ```
+A conferência remota compara tamanho e MD5 informado pelo destino (S3 guarda o
+MD5 nos metadados do objeto); se o destino não informar MD5, fica só no tamanho
+e o log registra `remote verification: size-only` como aviso. Nem esse check, nem o teste 7z, comprovam
+recuperação do banco. SQL Anywhere não executa dbvalid/dbeng/dbsrv. Seu sucesso
+significa saída nativa normal, arquivos esperados não vazios, pacote testado,
+criptografia concluída e publicação confirmada. Recovery é externo ao projeto,
+sem hook, tarefa automática, chave privada ou instância local de teste.
 
-3. Confira o `manifest.json` (`status`, arquivos e erros).
-4. Importe o dump:
+| Código | Significado |
+| --- | --- |
+| 0 | Trabalhos, reenvios e manutenção concluídos. |
+| 1 | Falha operacional, publicação, criptografia ou verificação. |
+| 2 | Configuração, dependência ou inicialização inválida. |
+| 3 | Lock ocupado; não publica tentativa falha nas métricas. |
+| 4 | Backups publicados, mas uma etapa auxiliar falhou: retenção, limpeza de execução interrompida, envio do log ou métricas. |
+| 5 | Os dois pacotes do fallback MySQL foram publicados como degradados. |
 
-   ```bat
-   "C:\Program Files\MySQL\MySQL Server 5.5\bin\mysql.exe" -h <servidor> -u <usuario_com_escrita> -p < C:\TI\Restore\<arquivo>\<arquivo>.sql
-   ```
+Precedência: 1 > 5 > 4 > 0. A etapa auxiliar que falhou continua registrada no
+log mesmo quando o código final é 5.
 
-   **Atenção:** o dump é gerado com `--databases` e contém
-   `CREATE DATABASE` e `USE` com o **nome original do banco**. Importado no
-   servidor de produção, ele grava por cima do banco em uso. Para restaurar com
-   outro nome, troque o nome nessas duas linhas do início do `.sql` antes de
-   importar, ou importe em um servidor de teste. Use uma conta com permissão
-   de escrita: a conta de backup normalmente só lê. O dump não inclui eventos
-   agendados do MySQL (`--skip-events`).
+## Atualização e migração
 
-O archive Fiscal contém a pasta `Fiscal` compactada; extraia e copie para o
-destino desejado.
+Da linha 0.x para v1: instale em outra pasta, configure secrets/destinatários e
+novas identidades. Os archives/configurações antigos não são importados. Preserve
+pendências antigas e o histórico; a nova rotina não os envia nem os remove.
+Desative tarefas antigas somente numa transição deliberada, quando a nova rotina
+estiver conferida. O setup não modifica a instalação antiga ou suas tarefas.
+Aposente métricas antigas somente ao aposentar o backup correspondente.
+
+Entre versões v1: pare os trabalhos de todas as instâncias que compartilham o
+código, confira o checksum do pacote e atualize os arquivos distribuídos. Preserve
+Instances e quaisquer caminhos operacionais externos. Reaplique a configuração
+se necessário. Não execute setup/backup enquanto substitui os módulos. Nenhuma
+migração ou atualização da produção é efetuada pelo build ou release.
+
+## Build e release
+
+`./scripts/verify.ps1` executa parsing, PSScriptAnalyzer e Pester com ferramentas
+simuladas. `./scripts/package.ps1` gera ZIP, manifest de arquivos e SHA-256 em
+dist. O workflow manual Release só aceita disparo a partir da `main`, repete os
+checks, recusa versões já publicadas e vincula a release ao commit verificado.
+As actions dos workflows são fixadas por SHA de commit. Disparar o workflow é uma ação separada;
+nenhuma publicação é realizada apenas por desenvolver esta branch.
+
+Os testes entregues não acessam bancos/S3 reais e não certificam compatibilidade
+nativa age/SAP/MySQL no ambiente do cliente. Restauração e validação de banco
+seguem como processo externo independente; não são executadas no CI ou servidor
+como parte do DBBackup.
