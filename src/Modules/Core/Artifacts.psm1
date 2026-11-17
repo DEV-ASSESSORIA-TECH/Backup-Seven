@@ -7,7 +7,7 @@ function Assert-DBBackupDependency {
     foreach ($j in $Jobs) {
         switch ($j.Provider) {
             MySQL { $paths += @($Configuration.Tools.MySql, $Configuration.Tools.MySqlDump, $Configuration.Database.DefaultsExtraFile) }
-            SQLAnywhere { $paths += @($Configuration.Tools.DbBackup, $Configuration.Tools.DbValid, $Configuration.Database.ConnectionOptionsFile) }
+            SQLAnywhere { $paths += @($Configuration.Tools.DbBackup, $Configuration.Tools.DbValid, $Configuration.Tools.DbEngine, $Configuration.Database.ConnectionOptionsFile) }
             Directory { if (-not (Test-Path -LiteralPath $j.SourcePath -PathType Container)) { throw 'Directory source is missing.' } }
         }
     }
