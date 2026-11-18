@@ -161,23 +161,20 @@ Describe 'DBBackup updater (Atualizar.bat)' {
         It 'does nothing when the installed version is already the latest' {
             $InstallRoot = New-TestInstallation 'current'
             Set-Content -LiteralPath (Join-Path $InstallRoot 'App/VERSION') -Value ([string] $script:Version)
-            $PackagePath = $null; $Yes = $true
             Mock Invoke-RestMethod { & $script:Release "v$($script:Version)" }
             Mock Invoke-WebRequest { throw 'must not download' }
-            Invoke-DBUpdate 6>&1 | Out-Null
+            Invoke-DBUpdate -InstallRoot $InstallRoot -Yes 6>&1 | Out-Null
             Should -Invoke Invoke-WebRequest -Times 0
         }
 
         It 'downloads, verifies and installs a newer release' {
             $InstallRoot = New-TestInstallation 'online'
-            $PackagePath = $null; $Yes = $true
-            $Repository = 'DEV-ASSESSORIA-TECH/DBBackup'; $ApiBaseUrl = 'https://api.github.com'
             Mock Invoke-RestMethod { & $script:Release "v$($script:Version)" } -ParameterFilter { $Uri -eq 'https://api.github.com/repos/DEV-ASSESSORIA-TECH/DBBackup/releases/latest' }
             Mock Invoke-WebRequest {
                 $source = if ($Uri -like '*sha') { "$($script:Package.FullName).sha256" } else { $script:Package.FullName }
                 Copy-Item -LiteralPath $source -Destination $OutFile
             }
-            Invoke-DBUpdate | Should -Be 0
+            Invoke-DBUpdate -InstallRoot $InstallRoot -Yes | Should -Be 0
             Should -Invoke Invoke-WebRequest -Times 2
             (Get-Content (Join-Path $InstallRoot 'App/VERSION') -Raw).Trim() | Should -Be ([string] $script:Version)
             Join-Path $InstallRoot 'Instances/acme/Secrets/rclone.conf' | Should -Exist

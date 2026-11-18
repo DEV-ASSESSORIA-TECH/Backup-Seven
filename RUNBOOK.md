@@ -72,9 +72,13 @@ O `Setup.bat` pergunta e valida cada resposta na hora:
    adicionar backup de pasta.
 5. **Agenda**: jobs com os mesmos horários entram na mesma tarefa
    (`diario-1900`, `diario-1230-1900`) e rodam em sequência.
-6. **Teste opcional, somente leitura**: login em cada banco, existência de cada
+6. **Monitoramento**: publicar métricas para o Grafana Alloy (padrão Sim quando
+   a pasta do Alloy existe), serviço (sistema protegido, ex.: `seven`) e
+   `backup_id` de cada job. Para continuar as séries de uma versão anterior,
+   use os mesmos ids (ex.: `database`, `fiscal` da backup-seven 0.6).
+7. **Teste opcional, somente leitura**: login em cada banco, existência de cada
    pasta e listagem de cada destino S3. Nada é gravado no bucket.
-7. **Diagnóstico local**, plano das tarefas (confirmar com `SIM`) e resumo com
+8. **Diagnóstico local**, plano das tarefas (confirmar com `SIM`) e resumo com
    os jobs, destinos e o comando do primeiro backup. Tarefas de versões
    anteriores (pastas `\DBBackup\<instância>\` da 1.x e `\BackupSeven\` da
    0.x) são listadas com o script que executam, e removidas se você digitar

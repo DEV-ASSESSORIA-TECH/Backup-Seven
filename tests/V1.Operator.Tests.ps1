@@ -214,3 +214,18 @@ Describe 'Run feedback and native tool input' {
         Get-DBSqlAnywhereSizeEstimate -Configuration $config -Job $job -Runtime ([pscustomobject]@{ Work = $work }) | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Monitoring in the guided setup' {
+    It 'enables Alloy metrics and keeps backup_ids of an earlier version' {
+        $alloy = Join-Path $TestDrive 'alloy'
+        $null = New-Item -ItemType Directory $alloy -Force
+        $data = @{ Jobs = @(@{ Id = 'Database' }, @{ Id = 'Fiscal' }); Monitoring = @{ Enabled = $false; Service = 'erp'; TextfileDirectory = $alloy; BackupIds = @{} } }
+        $script:Replies = [Collections.Generic.Queue[string]]::new([string[]] @('', '', 'seven', 'database', ''))
+        Mock Read-Host { $script:Replies.Dequeue() } -ModuleName Setup
+        InModuleScope Setup -Parameters @{ Data = $data } { param($Data) Read-DBMonitoring $Data 'Seven' }
+        $data.Monitoring.Enabled | Should -BeTrue
+        $data.Monitoring.Service | Should -Be 'seven'
+        $data.Monitoring.BackupIds.Database | Should -Be 'database'
+        $data.Monitoring.BackupIds.Fiscal | Should -Be 'seven-fiscal'
+    }
+}

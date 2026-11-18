@@ -175,6 +175,9 @@ function Test-DBInstance {
         if ($connection.DBN -cne $job.Database) { throw "Job $($job.Id): SQL DBN must match the job Database." }
     }
     $null = Assert-DBBackupDependency -Configuration $Configuration -Jobs $Configuration.Jobs
+    if (-not $Configuration.Monitoring.Enabled -and (Test-Path -LiteralPath 'C:\ProgramData\GrafanaLabs\Alloy\textfile' -PathType Container)) {
+        Write-Warning 'O Grafana Alloy esta instalado, mas esta instancia nao publica metricas (Monitoring.Enabled = $false). Ative com Editar-Configuracao.bat.'
+    }
     foreach ($path in $Configuration.Paths.Values) { Assert-DBFreeSpace -Path $path -RequiredBytes 0 -ReserveBytes $Configuration.Execution.ReserveBytes }
     [pscustomobject]@{Instance=$Configuration.InstanceName;Jobs=@($Configuration.Jobs.Id);Status='LOCAL_CHECKS_OK';RemoteDatabaseChecked=$false}
 }
@@ -477,6 +480,35 @@ function Save-DBConfigurationData {
     Restore-DBInheritedAccess $ConfigPath
 }
 
+function Read-DBMonitoring {
+    <#
+    Metrics for Grafana Alloy (textfile). Suggested when the Alloy textfile
+    folder exists on this host. Service is the protected system (seven,
+    dominio); a backup_id per job keeps the series of an earlier version when
+    reused (e.g. 'database' and 'fiscal' of backup-seven 0.6).
+    #>
+    param([Collections.IDictionary] $Data, [string] $InstanceName)
+    if (-not $Data.Contains('Monitoring') -or $Data.Monitoring -isnot [Collections.IDictionary]) { $Data.Monitoring = @{ Enabled = $false } }
+    $m = $Data.Monitoring
+    if (-not $m.Contains('TextfileDirectory') -or -not $m.TextfileDirectory) { $m.TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup' }
+    $alloy = Test-Path -LiteralPath $m.TextfileDirectory -PathType Container
+    $default = [bool] ($m.Contains('Enabled') -and $m.Enabled -eq $true) -or $alloy
+    if (-not (Read-DBConfirmation 'Publicar metricas dos backups para o Grafana Alloy?' $default)) { $m.Enabled = $false; return }
+    $m.Enabled = $true
+    $m.TextfileDirectory = Read-DBRequiredValue 'Pasta textfile do Alloy' $m.TextfileDirectory {
+        param($value)
+        if (-not [IO.Path]::IsPathFullyQualified($value)) { throw 'Informe o caminho completo.' }
+    }
+    $identifier = { param($value) if ($value -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$') { throw 'Use minusculas, numeros, - ou _.' } }
+    $serviceDefault = if ($m.Contains('Service') -and $m.Service -and $m.Service -cne 'erp') { [string] $m.Service } else { $InstanceName.ToLowerInvariant() }
+    $m.Service = Read-DBRequiredValue 'Servico monitorado (sistema protegido, ex.: seven, dominio)' $serviceDefault $identifier
+    if (-not $m.Contains('BackupIds') -or $m.BackupIds -isnot [Collections.IDictionary]) { $m.BackupIds = @{} }
+    foreach ($job in @($Data.Jobs)) {
+        $current = if ($m.BackupIds.Contains($job.Id)) { [string] $m.BackupIds[$job.Id] } else { "$($InstanceName.ToLowerInvariant())-$(([string] $job.Id).ToLowerInvariant())" }
+        $m.BackupIds[$job.Id] = Read-DBRequiredValue "backup_id do job $($job.Id) no Grafana (reuse o da versao anterior para manter o historico)" $current $identifier
+    }
+}
+
 function Invoke-DBInteractiveSetup {
     <#
     Guided creation (or extension) of an instance. Returns the config path.
@@ -554,6 +586,7 @@ function Invoke-DBInteractiveSetup {
         Add-DBScheduledJob $data $answer.Job.Id $answer.At
     }
     $data.Jobs = $jobs
+    Read-DBMonitoring $data $InstanceName
     Save-DBConfigurationData $data $configPath $InstancesRoot
     Protect-DBInstanceSecret (Read-DBConfiguration $configPath)
     return $configPath
@@ -629,6 +662,7 @@ function Get-DBSetupSummary {
         "Destinatarios age: $($recipients.Count)"
         "Completed / Logs:  $($Configuration.Paths.CompletedRoot) / $($Configuration.Paths.LogRoot)"
         'Diagnostico local: OK'
+        $(if ($Configuration.Monitoring.Enabled) { "Monitoramento:     servico $($Configuration.Monitoring.Service) em $($Configuration.Monitoring.TextfileDirectory)" } else { 'Monitoramento:     desligado (Monitoring.Enabled = $false)' })
     )
     foreach ($job in $Configuration.Jobs) {
         $source = if ($job.Provider -eq 'Directory') { $job.SourcePath } else { "banco $($job.Database)" }

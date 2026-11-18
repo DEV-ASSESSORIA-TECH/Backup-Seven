@@ -183,7 +183,7 @@ function Install-DBUpdate {
 }
 
 function Read-DBUpdateConfirmation {
-    param([string] $Prompt, [bool] $Default)
+    param([string] $Prompt, [bool] $Default, [switch] $Yes)
     if ($Yes) { return $Default }
     $suffix = if ($Default) { 'S/n' } else { 's/N' }
     $answer = Read-Host "$Prompt [$suffix]"
@@ -193,6 +193,8 @@ function Read-DBUpdateConfirmation {
 
 function Invoke-DBUpdate {
     <# Exit codes: 0 updated, already current or cancelled; 1 failure; 3 a backup is running. #>
+    param([string] $InstallRoot, [string] $PackagePath, [string] $Repository = 'DEV-ASSESSORIA-TECH/DBBackup',
+        [string] $ApiBaseUrl = 'https://api.github.com', [switch] $Yes)
     $work = $null
     try {
         if (-not $InstallRoot) { throw 'Informe -InstallRoot (pasta com App\ e os arquivos .bat).' }
@@ -217,7 +219,7 @@ function Invoke-DBUpdate {
             }
             "Ultima versao publicada: $($release.Version) - $($release.Url)" | Out-Host
             if ($release.Version -le $current) { "Ja esta na versao mais recente ($current). Nada a fazer." | Out-Host; return 0 }
-            if (-not (Read-DBUpdateConfirmation "Atualizar de $current para $($release.Version)?" $true)) { 'Atualizacao cancelada.' | Out-Host; return 0 }
+            if (-not (Read-DBUpdateConfirmation -Yes:$Yes "Atualizar de $current para $($release.Version)?" $true)) { 'Atualizacao cancelada.' | Out-Host; return 0 }
             $zip = Join-Path $work $release.ZipName
             $checksum = "$zip.sha256"
             'Baixando o pacote...' | Out-Host
@@ -232,7 +234,7 @@ function Invoke-DBUpdate {
         if ($PackagePath) {
             if ($target -lt $current) { Write-Warning "O pacote ($target) e mais antigo que a versao instalada ($current)." }
             $prompt = if ($target -eq $current) { "Reinstalar a versao $current a partir do ${source}?" } else { "Instalar a versao $target a partir do ${source}?" }
-            if (-not (Read-DBUpdateConfirmation $prompt ($target -gt $current))) { 'Atualizacao cancelada.' | Out-Host; return 0 }
+            if (-not (Read-DBUpdateConfirmation -Yes:$Yes $prompt ($target -gt $current))) { 'Atualizacao cancelada.' | Out-Host; return 0 }
         }
         $busy = @(Get-DBRunningInstance $root)
         if ($busy.Count) {
@@ -246,7 +248,7 @@ function Invoke-DBUpdate {
         $configs = @()
         $instances = Join-Path $root 'Instances'
         if (Test-Path -LiteralPath $instances) { $configs = @(Get-ChildItem -Path (Join-Path $instances '*/config.psd1') -File -ErrorAction SilentlyContinue | Sort-Object FullName) }
-        if ($configs.Count -and -not $Yes -and (Read-DBUpdateConfirmation "Reaplicar a configuracao das $($configs.Count) instancia(s) com a versao nova (recomendado)?" $true)) {
+        if ($configs.Count -and -not $Yes -and (Read-DBUpdateConfirmation -Yes:$Yes "Reaplicar a configuracao das $($configs.Count) instancia(s) com a versao nova (recomendado)?" $true)) {
             $pwsh = (Get-Process -Id $PID).Path
             foreach ($config in $configs) {
                 "`n== Aplicando $($config.FullName)" | Out-Host
@@ -266,4 +268,4 @@ function Invoke-DBUpdate {
 }
 
 if ($MyInvocation.InvocationName -eq '.') { return }
-exit (Invoke-DBUpdate)
+exit (Invoke-DBUpdate -InstallRoot $InstallRoot -PackagePath $PackagePath -Repository $Repository -ApiBaseUrl $ApiBaseUrl -Yes:$Yes)

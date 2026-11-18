@@ -22,6 +22,11 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
   pergunta quais jobs executar.
 - Apply lista tarefas da 0.x/1.x (`\BackupSeven\`, `\DBBackup\<instância>\`)
   com o script que executam e as remove com `SIM`.
+- Setup pergunta se publica métricas para o Grafana Alloy (sugere Sim quando a
+  pasta textfile do Alloy existe), o serviço e o `backup_id` de cada job
+  (reaproveitar o da 0.6 mantém o histórico). O diagnóstico avisa quando o
+  Alloy está instalado e a instância não publica métricas; antes, o modelo
+  vinha com `Monitoring.Enabled = $false` e o setup não perguntava.
 - Estimativa de espaço do SQL Anywhere na primeira execução via
   `dbping -pd FileSize,PageSize`, quando disponível.
 
