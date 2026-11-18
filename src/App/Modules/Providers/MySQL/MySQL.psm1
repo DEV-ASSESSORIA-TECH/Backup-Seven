@@ -10,15 +10,15 @@ function Invoke-DBMySql {
     $null = New-Item -ItemType Directory -Path $normal -Force
     $argsMap = @{
         MySqlDumpPath = $Configuration.Tools.MySqlDump
-        DefaultsExtraFile = $Configuration.Database.DefaultsExtraFile
-        DatabaseName = $Configuration.Database.Name
+        DefaultsExtraFile = $Job.CredentialFile
+        DatabaseName = $Job.Database
         TimeoutSeconds = if ($Configuration.Contains('Execution')) { $Configuration.Execution.ToolTimeoutSeconds } else { 21600 }
-        ExtraArguments = @($Configuration.Database.ExtraArguments)
+        ExtraArguments = @($Job.ExtraArguments)
     }
     # Reject unsafe user arguments before entering any fallback.
     foreach ($argument in $argsMap.ExtraArguments) {
         if ($argument -match '(?i)^(--(?:password|force|result-file|defaults-file|defaults-extra-file|defaults-group-suffix)(?:=|$)|-p|-r)') {
-            throw 'Unsafe Database.ExtraArguments option.'
+            throw "Job $($Job.Id): unsafe ExtraArguments option."
         }
     }
     $errors = @()
@@ -29,7 +29,7 @@ function Invoke-DBMySql {
             return [pscustomobject]@{
                 Status = 'SUCCESS'; Packages = @([pscustomobject]@{ Role = 'FULL'; SourcePath = $normal; ContentsOnly = $true })
                 Errors = @(); StartedAtUtc = $started; FinishedAtUtc = [DateTime]::UtcNow
-                Metadata = @{ Strategy = 'logical-dump'; Database = $Configuration.Database.Name; Validation = 'exit-code-and-nonempty'; ExtraArguments = $argsMap.ExtraArguments }
+                Metadata = @{ Strategy = 'logical-dump'; Database = $Job.Database; Validation = 'exit-code-and-nonempty'; ExtraArguments = $argsMap.ExtraArguments }
             }
         }
         $errors += Protect-DBMessage "Normal dump failed (exit $($normalResult.ExitCode)): $($normalResult.StdErr)"
@@ -51,7 +51,7 @@ function Invoke-DBMySql {
     $objects = @()
     $listingSucceeded = $false
     try {
-        $listed = @(Get-MySqlDatabaseObject -MySqlPath $Configuration.Tools.MySql -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile -DatabaseName $Configuration.Database.Name -TimeoutSeconds $argsMap.TimeoutSeconds)
+        $listed = @(Get-MySqlDatabaseObject -MySqlPath $Configuration.Tools.MySql -DefaultsExtraFile $Job.CredentialFile -DatabaseName $Job.Database -TimeoutSeconds $argsMap.TimeoutSeconds)
         $usedNames = @{}
         foreach ($object in $listed) {
             $name = Get-MySqlSafeFileName -Name $object.Name -UsedNames $usedNames
@@ -77,12 +77,12 @@ function Invoke-DBMySql {
     [pscustomobject]@{
         Status = if ($packages.Count -eq 2) { 'DEGRADED' } else { 'FAILED' }
         Packages = @($packages); Errors = @($errors); StartedAtUtc = $started; FinishedAtUtc = [DateTime]::UtcNow
-        Metadata = @{ Strategy = 'force+granular'; Database = $Configuration.Database.Name; General = $generalInfo; ListingSucceeded = $listingSucceeded; Objects = $objects; ExtraArguments = $argsMap.ExtraArguments }
+        Metadata = @{ Strategy = 'force+granular'; Database = $Job.Database; General = $generalInfo; ListingSucceeded = $listingSucceeded; Objects = $objects; ExtraArguments = $argsMap.ExtraArguments }
     }
 }
 function Get-DBMySqlSizeEstimate {
-    param([Collections.IDictionary] $Configuration)
+    param([Collections.IDictionary] $Configuration, $Job)
     $timeout = [Math]::Min(300, [double] $Configuration.Execution.ToolTimeoutSeconds)
-    return Get-MySqlDatabaseSize -MySqlPath $Configuration.Tools.MySql -DefaultsExtraFile $Configuration.Database.DefaultsExtraFile -DatabaseName $Configuration.Database.Name -TimeoutSeconds $timeout
+    return Get-MySqlDatabaseSize -MySqlPath $Configuration.Tools.MySql -DefaultsExtraFile $Job.CredentialFile -DatabaseName $Job.Database -TimeoutSeconds $timeout
 }
 Export-ModuleMember -Function Invoke-DBMySql, Get-DBMySqlSizeEstimate

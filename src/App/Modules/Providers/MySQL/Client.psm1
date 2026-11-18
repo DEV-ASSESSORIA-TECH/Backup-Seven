@@ -6,10 +6,10 @@ function Assert-MySqlDatabaseArgument {
 
     foreach ($argument in $ExtraArguments) {
         if ($argument -match '^(--password(?:=|$)|-p.+)') {
-            throw 'Database.ExtraArguments must not contain a password.'
+            throw 'ExtraArguments must not contain a password.'
         }
         if ($argument -match '^--force(?:=|$)') {
-            throw 'Database.ExtraArguments must not contain --force; DBBackup controls degraded dumps.'
+            throw 'ExtraArguments must not contain --force; DBBackup controls degraded dumps.'
         }
     }
 }

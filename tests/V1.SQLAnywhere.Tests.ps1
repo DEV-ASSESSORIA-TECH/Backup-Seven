@@ -1,7 +1,7 @@
 BeforeAll {
     $script:Repo=Split-Path -Parent $PSScriptRoot
-    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
-    Import-Module "$script:Repo/src/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Runtime.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
 }
 Describe 'SQL Anywhere safe full-backup provider' {
     BeforeEach {
@@ -9,9 +9,9 @@ Describe 'SQL Anywhere safe full-backup provider' {
         $null=New-Item -ItemType Directory $script:Root
         $script:Options=Join-Path $script:Root 'connection.options'
         Set-Content $script:Options '-c "UID=''backup'';PWD=''test-secret'';HOST=''192.0.2.1:2638'';DBN=''demo''"'
-        $script:C=@{Database=@{Name='demo';ConnectionOptionsFile=$script:Options};Tools=@{DbBackup='dbbackup.exe'}}
+        $script:C=@{Tools=@{DbBackup='dbbackup.exe'}}
         $script:R=[pscustomobject]@{RunId='0123456789abcdef0123456789abcdef';Work=(Join-Path $script:Root 'work')}
-        $script:J=[pscustomobject]@{Id='database'}
+        $script:J=[pscustomobject]@{Id='dominio';Provider='SQLAnywhere';Database='demo';CredentialFile=$script:Options}
         Mock Set-Acl {} -ModuleName Runtime
         Mock Invoke-DBTool {
             param($Executable,$Arguments)

@@ -1,12 +1,12 @@
 BeforeAll {
     $script:Repo = Split-Path -Parent $PSScriptRoot
-    Import-Module "$script:Repo/src/Modules/Providers/MySQL/MySQL.psm1"
-    Import-Module "$script:Repo/src/Modules/Providers/Directory/Directory.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Providers/MySQL/MySQL.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Providers/Directory/Directory.psm1"
 }
 Describe 'MySQL provider outcomes' {
     BeforeEach {
-        $script:C = @{Tools=@{MySqlDump='fake'; MySql='fake'}; Database=@{Name='db'; DefaultsExtraFile='secret'; ExtraArguments=@()}}
-        $script:J = [pscustomobject]@{Id='database'}
+        $script:C = @{Tools=@{MySqlDump='fake'; MySql='fake'}}
+        $script:J = [pscustomobject]@{Id='database'; Provider='MySQL'; Database='db'; CredentialFile='secret'; ExtraArguments=@()}
         $script:R = [pscustomobject]@{Work=(Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8)))}
         Mock Invoke-MySqlDatabaseDump {
             param($OutputPath)
@@ -42,7 +42,7 @@ Describe 'MySQL provider outcomes' {
         $r.Packages.Role | Should -Be @('GENERAL')
     }
     It 'rejects options that redirect dumps or expose a password' {
-        $script:C.Database.ExtraArguments=@('--result-file=elsewhere')
+        $script:J.ExtraArguments=@('--result-file=elsewhere')
         { Invoke-DBMySql $script:C $script:J $script:R } | Should -Throw '*Unsafe*'
     }
 }

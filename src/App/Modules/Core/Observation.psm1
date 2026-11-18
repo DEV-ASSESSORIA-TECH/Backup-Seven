@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 foreach ($name in @('Monitoring','Schedule','Runtime')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
 
 function Get-DBApplicationVersion {
-    foreach ($relative in @('../../VERSION','../../../VERSION')) {
+    foreach ($relative in @('../../VERSION','../../../../VERSION')) {
         $path = Join-Path $PSScriptRoot $relative
         if (Test-Path -LiteralPath $path -PathType Leaf) { return (Get-Content -LiteralPath $path -Raw).Trim() }
     }

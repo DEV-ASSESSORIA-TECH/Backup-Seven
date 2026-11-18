@@ -6,14 +6,17 @@ function Assert-DBBackupDependency {
     $paths = @($Configuration.Tools.SevenZip, $Configuration.Tools.Age, $Configuration.Tools.Rclone, $Configuration.Storage.ConfigPath)
     foreach ($j in $Jobs) {
         switch ($j.Provider) {
-            MySQL { $paths += @($Configuration.Tools.MySql, $Configuration.Tools.MySqlDump, $Configuration.Database.DefaultsExtraFile) }
-            SQLAnywhere { $paths += @($Configuration.Tools.DbBackup, $Configuration.Database.ConnectionOptionsFile) }
-            Directory { if (-not (Test-Path -LiteralPath $j.SourcePath -PathType Container)) { throw 'Directory source is missing.' } }
+            MySQL { $paths += @($Configuration.Tools.MySql, $Configuration.Tools.MySqlDump, $j.CredentialFile) }
+            SQLAnywhere { $paths += @($Configuration.Tools.DbBackup, $j.CredentialFile) }
+            Directory { if (-not (Test-Path -LiteralPath $j.SourcePath -PathType Container)) { throw "Job $($j.Id): directory source is missing: $($j.SourcePath)" } }
         }
     }
     foreach ($path in $paths) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required dependency is missing: $path" } }
     $null = Read-DBRecipient $Configuration.Encryption.RecipientsFile
-    $null = Test-DBStorageConfiguration -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -RemoteRoot $Configuration.Storage.RemoteRoot -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
+    # Every rclone remote named by the selected jobs must exist in rclone.conf.
+    foreach ($root in @($Jobs | ForEach-Object RemoteRoot | Select-Object -Unique)) {
+        $null = Test-DBStorageConfiguration -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -RemoteRoot $root -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
+    }
 }
 
 function Write-DBJson {
@@ -45,7 +48,7 @@ function Read-DBArtifact {
     $s = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     if ($s.SchemaVersion -ne 1 -or $s.Instance -cne $Configuration.InstanceName) { throw 'Artifact schema or ownership mismatch.' }
     Assert-DBIdentifier $s.Job
-    if ($s.FileName -notmatch '^DBBackup_[A-Za-z0-9_-]+\.7z\.age$' -or [IO.Path]::GetFileName($s.FileName) -cne $s.FileName) { throw 'Unsafe artifact file name.' }
+    if ($s.FileName -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*\.7z\.age$' -or [IO.Path]::GetFileName($s.FileName) -cne $s.FileName) { throw 'Unsafe artifact file name.' }
     if ($s.RemotePath -notmatch '^[A-Za-z0-9_-]+:[^\r\n]+$' -or -not $s.RemotePath.EndsWith('/' + $s.FileName, [StringComparison]::Ordinal)) { throw 'Invalid recorded remote destination.' }
     if (Test-DBLocalPayloadRemoved $s) {
         # Retention.KeepLocalPayload = $false: only confirmed bundles may drop
@@ -90,11 +93,34 @@ function Send-DBBundle {
     }
 }
 
+function Get-DBArtifactBaseName {
+    <#
+    Operator-readable name, local time first:
+    2026-11-18_09-54-17_<instance>_<job>[_GERAL|_GRANULAR]. FULL has no suffix.
+    The run ID stays in state.json and in the manifest. A name already used in
+    Staging, Pending or Completed gets -2, -3, ...
+    #>
+    param([Collections.IDictionary] $Configuration, $Runtime, $Job, [DateTime] $StartedAtUtc, [string] $Role)
+    Assert-DBIdentifier $Role
+    $suffix = switch ($Role) { 'FULL' { '' } 'GENERAL' { '_GERAL' } default { "_$Role" } }
+    $stamp = $StartedAtUtc.ToLocalTime().ToString('yyyy-MM-dd_HH-mm-ss', [Globalization.CultureInfo]::InvariantCulture)
+    $candidate = "${stamp}_$($Configuration.InstanceName)_$($Job.Id)$suffix"
+    $name = $candidate
+    for ($n = 2; $n -lt 1000; $n++) {
+        $taken = @(
+            (Join-Path $Runtime.Staging $name)
+            (Join-Path (Join-Path $Runtime.Pending $Job.Id) $name)
+            (Join-Path (Join-Path $Runtime.Completed $Job.Id) $name)
+        ) | Where-Object { Test-Path -LiteralPath $_ }
+        if (@($taken).Count -eq 0) { return $name }
+        $name = "$candidate-$n"
+    }
+    throw 'Could not allocate a unique artifact name.'
+}
+
 function Publish-DBPackage {
     param([Collections.IDictionary] $Configuration, $Runtime, $Job, $Result, $Package)
-    $stamp = $Result.StartedAtUtc.ToString('yyyyMMddTHHmmssZ')
-    Assert-DBIdentifier $Package.Role
-    $base = "DBBackup_${stamp}_$($Configuration.InstanceName)_$($Job.Id)_$($Runtime.RunId)_$($Package.Role)"
+    $base = Get-DBArtifactBaseName -Configuration $Configuration -Runtime $Runtime -Job $Job -StartedAtUtc $Result.StartedAtUtc -Role $Package.Role
     $source = [IO.Path]::GetFullPath($Package.SourcePath)
     if (-not (Test-DBPathWithin $source $Runtime.Work)) { throw 'Provider payload is outside run work directory.' }
     $manifestPath = Join-Path $source 'manifest.json'
@@ -167,7 +193,8 @@ function Publish-DBPackage {
         $payload = Join-Path $bundle $name
         Move-Item -LiteralPath $temp -Destination $payload -ErrorAction Stop
         # RemoteRoot is the instance's complete destination (bucket/prefix).
-        $remote = '{0}/{1}/{2}/{3}' -f $Configuration.Storage.RemoteRoot, $Job.Id, $Result.StartedAtUtc.ToString('yyyy/MM/dd'), $name
+        # Job destination (<RemoteRoot>/<job>), then the local date of the file name.
+        $remote = '{0}/{1}/{2}' -f $Job.Destination, $Result.StartedAtUtc.ToLocalTime().ToString('yyyy/MM/dd', [Globalization.CultureInfo]::InvariantCulture), $name
         # One read yields size, SHA-256 (local integrity) and MD5 (remote check).
         $digest = Get-DBFileDigest -Path $payload
         Write-DBJson (Join-Path $bundle 'state.json') @{
@@ -230,10 +257,11 @@ function Remove-DBExpired {
             }
         }
     }
-    foreach ($log in @(Get-ChildItem -LiteralPath $Configuration.Paths.LogRoot -File -Filter 'DBBackupLog_*.log')) {
-        if ($log.FullName -eq $Runtime.LogPath -or $log.Name -notmatch '^DBBackupLog_(\d{8}T\d{6}Z)_[a-f0-9]{32}\.log$') { continue }
+    foreach ($log in @(Get-ChildItem -LiteralPath $Configuration.Paths.LogRoot -File -Filter '*.log')) {
+        # Only DBBackup run logs (yyyy-MM-dd_HH-mm-ss[-n].log, local time) are aged out.
+        if ($log.FullName -eq $Runtime.LogPath -or $log.Name -notmatch '^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(-\d+)?\.log$') { continue }
         try {
-            $date = [DateTime]::ParseExact($Matches[1], 'yyyyMMddTHHmmssZ', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime()
+            $date = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd_HH-mm-ss', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal).ToUniversalTime()
             if ($date -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.LogDays)) { Remove-Item -LiteralPath $log.FullName -Force -ErrorAction Stop }
         }
         catch {
@@ -260,9 +288,20 @@ function Get-DBPendingSummary {
 }
 
 function Publish-DBLog {
-    param([Collections.IDictionary] $Configuration, $Runtime, [double] $TimeoutSeconds = 900)
-    $remote = '{0}/Logs/{1}/{2}' -f $Configuration.Storage.RemoteRoot, [DateTime]::UtcNow.ToString('yyyy/MM/dd'), [IO.Path]::GetFileName($Runtime.LogPath)
-    $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath $Runtime.LogPath -RemotePath $remote -TimeoutSeconds $TimeoutSeconds
+    <#
+    The run log goes to <RemoteRoot>/Logs/yyyy/MM/dd/<log>_<instance>.log of
+    every distinct RemoteRoot used by the jobs of this run. All destinations
+    are attempted; the first failure is rethrown afterwards.
+    #>
+    param([Collections.IDictionary] $Configuration, $Runtime, [object[]] $Jobs, [double] $TimeoutSeconds = 900)
+    $name = '{0}_{1}.log' -f [IO.Path]::GetFileNameWithoutExtension($Runtime.LogPath), $Configuration.InstanceName
+    $date = [DateTime]::Now.ToString('yyyy/MM/dd', [Globalization.CultureInfo]::InvariantCulture)
+    $failure = $null
+    foreach ($root in @($Jobs | ForEach-Object RemoteRoot | Select-Object -Unique)) {
+        try { $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath $Runtime.LogPath -RemotePath "$root/Logs/$date/$name" -TimeoutSeconds $TimeoutSeconds }
+        catch { if ($null -eq $failure) { $failure = $_ } }
+    }
+    if ($null -ne $failure) { throw $failure }
 }
 
 Export-ModuleMember -Function Assert-DBBackupDependency, Publish-DBPackage, Invoke-DBPendingRetry, Remove-DBExpired, Get-DBPendingSummary, Publish-DBLog, Read-DBArtifact, Test-DBLocalPayloadRemoved

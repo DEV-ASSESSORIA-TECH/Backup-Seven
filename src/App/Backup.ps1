@@ -2,6 +2,7 @@
 [CmdletBinding(DefaultParameterSetName = 'Job')]
 param(
     [Parameter(Mandatory)][string] $ConfigPath,
+    # One job ID or a comma-separated list (scheduled tasks pass "a,b").
     [Parameter(Mandatory, ParameterSetName = 'Job')][string] $Job,
     [Parameter(Mandatory, ParameterSetName = 'All')][switch] $All
 )

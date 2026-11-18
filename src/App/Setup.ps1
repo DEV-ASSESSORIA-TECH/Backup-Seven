@@ -1,7 +1,8 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([string] $ConfigPath, [ValidateSet('MySQL','SQLAnywhere')][string] $Provider,
-    [string] $InstanceName, [string] $InstancesRoot = (Join-Path $PSScriptRoot 'Instances'),
+param([string] $ConfigPath, [string] $InstanceName,
+    # <root>\Instances beside the App folder (<root>\App\Setup.ps1).
+    [string] $InstancesRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Instances'),
     [switch] $Apply, [switch] $Plan)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -20,33 +21,16 @@ try {
         $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Execute setup as Administrator.' }
     }
-    if (-not $ConfigPath) {
-        if ($Apply -or $Plan) { $ConfigPath = Read-Host 'Caminho completo do config.psd1 existente' }
-        else {
-            if (-not $Provider) { $Provider = Read-Host 'Provedor: MySQL ou SQLAnywhere' }
-            if ($Provider -cnotin @('MySQL','SQLAnywhere')) { throw 'Unknown provider.' }
-            if (-not $InstanceName) {
-                'O nome da instancia identifica esta configuracao no servidor (pasta Instances e tarefas agendadas). Ele nao define a pasta no S3.' | Out-Host
-                $InstanceName = Read-Host "Nome da instancia [$Provider]"
-                if (-not $InstanceName) { $InstanceName = $Provider }
-            }
-            Assert-DBIdentifier $InstanceName
-            $ConfigPath = Join-Path $InstancesRoot "$InstanceName/config.psd1"
-        }
+    if ($Apply -or $Plan) {
+        if (-not $ConfigPath) { $ConfigPath = (Read-Host 'Caminho completo do config.psd1 existente').Trim('"') }
+        $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
+        if (-not (Test-DBPathWithin $ConfigPath $InstancesRoot)) { throw 'Configuration must be inside InstancesRoot.' }
+        if (-not (Test-Path -LiteralPath $ConfigPath)) { throw 'Configuration does not exist.' }
+        if ($Apply) { $savedConfigPath = $ConfigPath }
     }
-    $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
-    if (-not (Test-DBPathWithin $ConfigPath $InstancesRoot)) { throw 'Configuration must be inside InstancesRoot.' }
-    if (-not (Test-Path -LiteralPath $ConfigPath)) {
-        if ($Apply -or $Plan) { throw 'Configuration does not exist.' }
-        if (-not $Provider) { throw 'Provider is required to create an instance.' }
-        if (-not $InstanceName) { $InstanceName = Split-Path -Leaf (Split-Path $ConfigPath) }
-        $null = Initialize-DBInstance -ConfigPath $ConfigPath -Provider $Provider -InstanceName $InstanceName -TemplateRoot (Join-Path $PSScriptRoot 'Templates') -InstancesRoot $InstancesRoot
-    }
-    if ($Apply) { $savedConfigPath = $ConfigPath }
-    if (-not $Apply -and -not $Plan) {
-        $null = Read-DBConfiguration $ConfigPath
-        Set-DBInteractiveConfiguration $ConfigPath
-        Initialize-DBSecret (Read-DBConfiguration $ConfigPath)
+    else {
+        if ($ConfigPath) { $InstanceName = Split-Path -Leaf (Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))) }
+        $ConfigPath = Invoke-DBInteractiveSetup -InstancesRoot $InstancesRoot -TemplateRoot (Join-Path $PSScriptRoot 'Templates') -InstanceName $InstanceName
         $savedConfigPath = $ConfigPath
         if (-not (Invoke-DBConnectionCheck (Read-DBConfiguration $ConfigPath))) {
             throw 'Setup interrompido apos o teste de conexao.'

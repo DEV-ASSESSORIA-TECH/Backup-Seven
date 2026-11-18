@@ -4,6 +4,38 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [2.0.0] - 2026-11-18
+
+### Alterado — incompatível com a 1.x
+
+- Instância e job separados (configuração schema 2): a instância reúne
+  credenciais S3, destinatários age, agenda e pastas; cada job tem provedor
+  (MySQL, SQL Anywhere ou Diretório) e `RemoteRoot` próprios. Uma instância
+  pode combinar qualquer conjunto de jobs, inclusive só pastas. A seção
+  `Directories` e os campos `Provider`/`Database` da instância deixam de existir.
+- Tarefas agendadas executam uma lista de jobs (`Schedule.Tasks[].Jobs`), em
+  sequência; `Backup.ps1 -Job` aceita `a,b`.
+- Nomes legíveis: `2026-11-18_19-00-05_<instância>_<job>[_GERAL|_GRANULAR].7z.age`,
+  em horário local; logs `Logs\<instância>\2026-11-18_19-00-02.log`.
+- `Completed` e `Logs` saem da instância e ficam na raiz da instalação
+  (`Completed\<instância>\<job>\`, `Logs\<instância>\`), com a permissão
+  herdada. Só `Secrets` e `Runtime` continuam restritas; a pasta da instância e
+  o `config.psd1` voltam a ser editáveis.
+- Pacote: na raiz só os `.bat` e `LEIA-ME.txt` (versão e links); scripts,
+  módulos, modelo e `VERSION` em `App\`. README, RUNBOOK, ARCHITECTURE e
+  contratos não fazem mais parte do pacote, nem o `PACKAGE-MANIFEST.json`.
+
+### Adicionado
+
+- Setup com menu de jobs (MySQL, SQL Anywhere, Diretório), pergunta explícita
+  sobre backup de pasta, opção de instância só de diretório, adição de jobs a
+  uma instância existente e agrupamento de jobs por horário numa tarefa.
+- Setup encontra arquivos já presentes em `Secrets` (`rclone.conf`,
+  `recipients.txt`, `*.cnf`, `*.options`), pergunta se mantém, garante a ACL e
+  guarda o recusado como `.old`; configuração 1.x guardada como `config.v1.psd1`.
+- Linha final `RESULTADO: ...` em todo log, com jobs e etapas que falharam.
+- `Diagnosticar.bat` e `Executar-Backup.bat`.
+
 ## [1.1.0] - 2026-11-18
 
 ### Alterado — incompatível com a 1.0.0

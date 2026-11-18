@@ -2,11 +2,11 @@ BeforeAll {
     $ErrorActionPreference = 'Stop'
     $script:Repo = Split-Path -Parent $PSScriptRoot
     . (Join-Path $PSScriptRoot 'V1.TestSupport.ps1')
-    Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Encryption.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Artifacts.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Runner.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Configuration.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Runtime.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Encryption.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Artifacts.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Runner.psm1"
 }
 Describe 'Encrypted pipeline with simulated external tools' {
     BeforeAll {
@@ -33,7 +33,9 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $s.LocalStatus | Should -Be SUCCESS
         $s.FileName | Should -BeLike '*.7z.age'
         # RemoteRoot is the full destination: no instance name is inserted.
-        $s.RemotePath | Should -BeExactly ('s3:test-bucket/database/{0}/{1}' -f ([datetime]$s.RecoveryPointUtc).ToUniversalTime().ToString('yyyy/MM/dd'), $s.FileName)
+        $s.RemotePath | Should -BeExactly ('s3:test-bucket/database/{0}/{1}' -f ([datetime]$s.RecoveryPointUtc).ToLocalTime().ToString('yyyy/MM/dd'), $s.FileName)
+        # Readable name: local timestamp first, then instance and job; no run ID.
+        $s.FileName | Should -Match '^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_MySQL_database\.7z\.age$'
         # Fixture copies bytes instead of encrypting: inspect orchestration only.
         Get-Content (Join-Path $bundle.FullName $s.FileName) -Raw | Should -Match 'manifest.json'
         Get-Content $env:DBBACKUP_FAKE_INVOCATION_LOG -Raw | Should -Not -Match 'fake-secret'
@@ -81,6 +83,7 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $states = @(Get-ChildItem "$script:Root/instance/Completed" -Recurse -Filter state.json | ForEach-Object {Get-Content $_.FullName -Raw | ConvertFrom-Json})
         $states.Count | Should -Be 2
         $states.LocalStatus | Should -Be @('DEGRADED','DEGRADED')
+        @($states.FileName | Sort-Object) | Should -Match '_MySQL_database_(GERAL|GRANULAR)\.7z\.age$'
     }
     It 'rejects a private key or an empty recipients file' {
         $path=Join-Path $script:Root 'recipients.txt'
@@ -93,9 +96,8 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $source=Join-Path $script:Root 'documents'
         $null=New-Item -ItemType Directory $source
         Set-Content (Join-Path $source 'file.txt') 'document'
-        $text=(Get-Content $script:Config -Raw).Replace('Directories = @()', "Directories = @(@{Id='documents';SourcePath='$($source.Replace("'","''"))'})")
-        $text=$text.Replace('mysql.exe','absent-mysql.exe').Replace('mysqldump.exe','absent-mysqldump.exe')
-        Set-Content $script:Config $text
+        Add-DBTestJob $script:Config "@{Id='documents';Provider='Directory';SourcePath='$($source.Replace("'","''"))';RemoteRoot='s3:test-bucket'}"
+        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('mysql.exe','absent-mysql.exe').Replace('mysqldump.exe','absent-mysqldump.exe'))
         Invoke-DBBackup -ConfigPath $script:Config -Job documents | Should -Be 0
         @(Get-ChildItem "$script:Root/instance/Completed/documents" -Directory).Count | Should -Be 1
     }
@@ -103,7 +105,7 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $source=Join-Path $script:Root 'documents'
         $null=New-Item -ItemType Directory $source
         Set-Content (Join-Path $source 'file.txt') 'document'
-        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('Directories = @()', "Directories = @(@{Id='documents';SourcePath='$($source.Replace("'","''"))'})"))
+        Add-DBTestJob $script:Config "@{Id='documents';Provider='Directory';SourcePath='$($source.Replace("'","''"))';RemoteRoot='s3:test-bucket'}"
         $env:DBBACKUP_FAKE_MYSQLDUMP_NORMAL_EXIT='2'
         $env:DBBACKUP_FAKE_MYSQL_EXIT='1'
         Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 1
@@ -116,7 +118,7 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $staleWork = Join-Path $runtime "Work/$('a' * 32)/_secrets"
         $null = New-Item -ItemType Directory $staleWork -Force
         Set-Content (Join-Path $staleWork 'backup.options') '-c "PWD=left-behind"'
-        $staleBundle = Join-Path $runtime 'Staging/DBBackup_20260101T000000Z_MySQL_database_stale_FULL'
+        $staleBundle = Join-Path $runtime 'Staging/2026-01-01_00-00-00_MySQL_database'
         $null = New-Item -ItemType Directory $staleBundle -Force
         Set-Content (Join-Path $staleBundle 'payload.tmp') 'partial'
         $unknown = Join-Path $runtime 'Work/operator-notes'
@@ -155,7 +157,7 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $corrupt = Join-Path $completed 'DBBackup_corrupt'
         $null = New-Item -ItemType Directory $corrupt
         Set-Content (Join-Path $corrupt 'state.json') 'not json'
-        $oldLog = Join-Path "$script:Root/instance/Logs" "DBBackupLog_20000101T000000Z_$('b' * 32).log"
+        $oldLog = Join-Path "$script:Root/instance/Logs" "2000-01-01_00-00-00.log"
         Set-Content $oldLog 'old'
         Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 4
         Test-Path $expired | Should -BeFalse
@@ -203,7 +205,7 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $null=New-Item -ItemType Directory (Join-Path $source 'sub') -Force
         Set-Content (Join-Path $source 'manifest.json') '{"user":true}'
         Set-Content (Join-Path $source 'sub/file.txt') 'document'
-        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('Directories = @()', "Directories = @(@{Id='documents';SourcePath='$($source.Replace("'","''"))'})"))
+        Add-DBTestJob $script:Config "@{Id='documents';Provider='Directory';SourcePath='$($source.Replace("'","''"))';RemoteRoot='s3:test-bucket'}"
         Invoke-DBBackup -ConfigPath $script:Config -Job documents | Should -Be 0
         $bundle = Get-ChildItem "$script:Root/instance/Completed/documents" -Directory
         $s = Read-DBArtifact $bundle.FullName (Read-DBConfiguration $script:Config)
@@ -255,5 +257,40 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $env:DBBACKUP_FAKE_RCLONE_REMOTE_MD5=$null
         Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
         @(Get-ChildItem "$script:Root/instance/Completed/database" -Directory).Count | Should -Be 2
+    }
+    It 'runs a comma-separated job list in order and ends the log with a readable result' {
+        $source=Join-Path $script:Root 'documents'
+        $null=New-Item -ItemType Directory $source
+        Set-Content (Join-Path $source 'file.txt') 'document'
+        Add-DBTestJob $script:Config "@{Id='documents';Provider='Directory';SourcePath='$($source.Replace("'","''"))';RemoteRoot='s3:test-bucket'}"
+        Invoke-DBBackup -ConfigPath $script:Config -Job 'documents, database' | Should -Be 0
+        @(Get-ChildItem "$script:Root/instance/Completed/documents" -Directory).Count | Should -Be 1
+        @(Get-ChildItem "$script:Root/instance/Completed/database" -Directory).Count | Should -Be 1
+        $log = Get-ChildItem "$script:Root/instance/Logs" -File | Select-Object -First 1
+        $log.Name | Should -Match '^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.log$'
+        (Get-Content $log.FullName | Select-Object -Last 1) | Should -Match 'RESULTADO: SUCESSO \(exit 0\)$'
+        $calls = Get-Content $env:DBBACKUP_FAKE_INVOCATION_LOG -Raw
+        $calls | Should -Match ([regex]::Escape("s3:test-bucket/Logs/") + '\d{4}/\d{2}/\d{2}/' + [regex]::Escape("$([IO.Path]::GetFileNameWithoutExtension($log.Name))_MySQL.log"))
+        { Invoke-DBBackup -ConfigPath $script:Config -Job 'nope' } | Should -Not -Throw
+        Invoke-DBBackup -ConfigPath $script:Config -Job 'nope' | Should -Be 2
+    }
+    It 'names the failed job in the final result line' {
+        $env:DBBACKUP_FAKE_AGE_EXIT='1'
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 1
+        $log = Get-ChildItem "$script:Root/instance/Logs" -File | Sort-Object LastWriteTimeUtc | Select-Object -Last 1
+        (Get-Content $log.FullName | Select-Object -Last 1) | Should -Match 'RESULTADO: FALHA \(exit 1\) - jobs com falha: database'
+    }
+    It 'runs an instance that only backs up directories' {
+        $source=Join-Path $script:Root 'documents'
+        $null=New-Item -ItemType Directory $source
+        Set-Content (Join-Path $source 'file.txt') 'document'
+        $text = Get-Content $script:Config -Raw
+        $text = $text -replace "(?m)^\s*Jobs = .*$", "    Jobs = @(@{ Id = 'documents'; Provider = 'Directory'; SourcePath = '$($source.Replace("'","''"))'; RemoteRoot = 's3:test-bucket' })"
+        $text = $text -replace "(?m)^\s*(MySql|MySqlDump) = .*\r?\n", ''
+        $text = $text.Replace("Jobs = @('database')", "Jobs = @('documents')")
+        Set-Content $script:Config $text
+        Remove-Item "$script:Root/instance/Secrets/mysql.cnf"
+        Invoke-DBBackup -ConfigPath $script:Config -All | Should -Be 0
+        @(Get-ChildItem "$script:Root/instance/Completed/documents" -Directory).Count | Should -Be 1
     }
 }
