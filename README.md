@@ -11,7 +11,8 @@ Os pacotes pendentes são reenviados sem mudar seu conteúdo ou destino.
 - MySQL: dump lógico e fallback geral/granular explicitamente degradado.
 - SQL Anywhere: cópia nativa completa do banco e log, sem renomear/truncar o log.
 - Uma configuração, Secrets, Runtime, Completed, Logs e lock por instância.
-- Setup e agendamento comuns em `\DBBackup\<instância>\`.
+- Setup guiado e agendamento comum na pasta `\DBBackup\` (tarefas `<instância>-<tarefa>`).
+- Destino S3 completo por instância (`remote:bucket/prefixo`), independente do nome da instância.
 - Métricas no contrato genérico de backups do Grafana Alloy.
 - Timeouts dos processos externos, encerramento da árvore e checks de espaço.
 
@@ -27,7 +28,7 @@ Requer Windows, PowerShell 7.2 ou superior, 7-Zip, age e rclone. MySQL precisa
 mysql/mysqldump compatíveis com a origem 5.x. SQL Anywhere precisa dbbackup 17 e
 suas dependências nativas. Executáveis externos não acompanham o ZIP.
 
-Extraia `DBBackup-1.0.0.zip` em uma pasta nova. Em PowerShell elevado:
+Extraia `DBBackup-1.1.0.zip` em uma pasta nova. Em PowerShell elevado:
 
 ```powershell
 .\Setup.ps1 -Provider MySQL -InstanceName MySQL

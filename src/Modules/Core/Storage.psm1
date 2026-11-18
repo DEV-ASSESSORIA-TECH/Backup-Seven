@@ -181,4 +181,33 @@ function Send-DBBackupFile {
     }
 }
 
-Export-ModuleMember -Function Test-DBStorageConfiguration, Get-DBFileDigest, Send-DBBackupFile
+function Test-DBStorageAccess {
+    <#
+    Read-only check of credentials, region and list permission on the
+    destination prefix (rclone lsjson, one level). Exit 3 (directory not
+    found) means access works but nothing was written there yet.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $RclonePath,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $ConfigPath,
+        [Parameter(Mandatory)][ValidatePattern('^[^:]+:.+')][string] $RemoteRoot,
+        [double] $TimeoutSeconds = 120
+    )
+    $result = Invoke-Rclone -RclonePath $RclonePath -TimeoutSeconds $TimeoutSeconds -Arguments @(
+        'lsjson'
+        $RemoteRoot
+        '--config'
+        $ConfigPath
+        '--max-depth'
+        '1'
+        '--no-mimetype'
+        '--no-modtime'
+    )
+    if ($result.ExitCode -in @(0, 3)) { return [pscustomobject]@{ Ok = $true; Message = "Listagem de $RemoteRoot permitida." } }
+    $detail = (([string] $result.StdErr) -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 3) -join ' '
+    return [pscustomobject]@{ Ok = $false; Message = "rclone nao conseguiu listar $RemoteRoot (exit $($result.ExitCode)). $detail" }
+}
+
+Export-ModuleMember -Function Test-DBStorageConfiguration, Test-DBStorageAccess, Get-DBFileDigest, Send-DBBackupFile

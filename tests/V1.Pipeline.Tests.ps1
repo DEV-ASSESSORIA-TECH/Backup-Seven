@@ -32,6 +32,8 @@ Describe 'Encrypted pipeline with simulated external tools' {
         $s.Transport | Should -Be CONFIRMED
         $s.LocalStatus | Should -Be SUCCESS
         $s.FileName | Should -BeLike '*.7z.age'
+        # RemoteRoot is the full destination: no instance name is inserted.
+        $s.RemotePath | Should -BeExactly ('s3:test-bucket/database/{0}/{1}' -f ([datetime]$s.RecoveryPointUtc).ToUniversalTime().ToString('yyyy/MM/dd'), $s.FileName)
         # Fixture copies bytes instead of encrypting: inspect orchestration only.
         Get-Content (Join-Path $bundle.FullName $s.FileName) -Raw | Should -Match 'manifest.json'
         Get-Content $env:DBBACKUP_FAKE_INVOCATION_LOG -Raw | Should -Not -Match 'fake-secret'

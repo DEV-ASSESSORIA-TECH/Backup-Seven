@@ -69,7 +69,7 @@ function Read-DBConfiguration {
         if (-not $c.Tools.Contains($key)) { throw "Missing tool: $key" }
     }
     $c.Storage.ConfigPath = Resolve-DBPath ([string] $c.Storage.ConfigPath) $base
-    if ([string] $c.Storage.RemoteRoot -notmatch '^[A-Za-z0-9_-]+:[^\r\n]+$') { throw 'Storage.RemoteRoot must use remote:path syntax.' }
+    $c.Storage.RemoteRoot = ConvertTo-DBRemoteRoot ([string] $c.Storage.RemoteRoot)
     $c.Encryption.RecipientsFile = Resolve-DBPath ([string] $c.Encryption.RecipientsFile) $base
     $credentialKey = if ($c.Provider -eq 'MySQL') { 'DefaultsExtraFile' } else { 'ConnectionOptionsFile' }
     $c.Database[$credentialKey] = Resolve-DBPath ([string] $c.Database[$credentialKey]) $base
@@ -142,6 +142,31 @@ function Read-DBConfiguration {
     return $c
 }
 
+function ConvertTo-DBRemoteRoot {
+    <#
+    Storage.RemoteRoot is the complete destination of an instance
+    (remote:bucket[/prefix]); artifacts go to <RemoteRoot>/<job>/yyyy/MM/dd/.
+    The instance name is not added, so it can be chosen freely. Returns the
+    value without a trailing separator; rejects empty or relative segments.
+    #>
+    param([string] $Value)
+    if ($Value -notmatch '^([A-Za-z0-9_-]+):([^\r\n]+)$') { throw 'Storage.RemoteRoot must use remote:bucket/prefix syntax.' }
+    $remote = $Matches[1]
+    $path = $Matches[2].TrimEnd('/')
+    $relative = $path.TrimStart('/')
+    if (-not $relative) { throw 'Storage.RemoteRoot must name a bucket: remote:bucket[/prefix].' }
+    foreach ($segment in $relative.Split('/')) {
+        if ($segment -in @('', '.', '..') -or $segment -match '[\\\x00-\x1f]') { throw "Storage.RemoteRoot has an invalid path segment: '$segment'." }
+    }
+    return "${remote}:$path"
+}
+
+function Test-DBRemoteOverlap {
+    <# True when two destinations are the same prefix or one contains the other (S3 keys are case-sensitive). #>
+    param([string] $First, [string] $Second)
+    return $First -ceq $Second -or $First.StartsWith($Second + '/', [StringComparison]::Ordinal) -or $Second.StartsWith($First + '/', [StringComparison]::Ordinal)
+}
+
 function Assert-DBInstanceIsolation {
     param([Collections.IDictionary] $Configuration, [string] $InstancesRoot)
     if (-not (Test-Path -LiteralPath $InstancesRoot)) { return }
@@ -149,6 +174,12 @@ function Assert-DBInstanceIsolation {
         if ($file.FullName -eq $Configuration.ConfigPath) { continue }
         $other = Read-DBConfiguration $file.FullName
         if ($other.InstanceName -eq $Configuration.InstanceName) { throw "Duplicate InstanceName: $($other.InstanceName)" }
+        # Each instance owns its destination prefix: sharing it would mix jobs
+        # of different databases in the same dated folders.
+        $placeholder = $Configuration.Storage.RemoteRoot -match 'REPLACE_' -or $other.Storage.RemoteRoot -match 'REPLACE_'
+        if (-not $placeholder -and (Test-DBRemoteOverlap $Configuration.Storage.RemoteRoot $other.Storage.RemoteRoot)) {
+            throw "Instances share the remote destination $($other.Storage.RemoteRoot) ($($other.InstanceName)); use a distinct bucket or prefix."
+        }
         if ($Configuration.Monitoring.Enabled -and $other.Monitoring.Enabled -and $Configuration.Monitoring.Service -ceq $other.Monitoring.Service) {
             foreach ($id in $Configuration.Monitoring.BackupIds.Values) {
                 if ($id -cin @($other.Monitoring.BackupIds.Values)) { throw 'Instances have duplicate monitoring identities on this host.' }
@@ -162,4 +193,4 @@ function Assert-DBInstanceIsolation {
     }
 }
 
-Export-ModuleMember -Function Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, Assert-DBInstanceIsolation
+Export-ModuleMember -Function Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, ConvertTo-DBRemoteRoot, Test-DBRemoteOverlap, Assert-DBInstanceIsolation

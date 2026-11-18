@@ -4,6 +4,32 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [1.1.0] - 2026-11-18
+
+### Alterado — incompatível com a 1.0.0
+
+- `Storage.RemoteRoot` passa a ser o destino completo da instância
+  (`remote:bucket/prefixo`). O nome da instância não é mais acrescentado ao
+  caminho remoto: `<RemoteRoot>/<trabalho>/aaaa/mm/dd/` e `<RemoteRoot>/Logs/`.
+  Duas instâncias do mesmo servidor não podem usar o mesmo destino.
+- Tarefas agendadas ficam direto em `\DBBackup\`, com o nome
+  `<instância>-<tarefa>`; cada instância só altera as próprias tarefas.
+
+### Corrigido
+
+- Setup falhava com `0x8007007B` ao abrir a pasta de tarefas: o caminho era
+  passado ao Agendador com barra final.
+
+### Adicionado
+
+- Setup guiado: valida executáveis na hora (com sugestão de instalação
+  encontrada), nome do banco obrigatório, bucket e prefixo separados, horário
+  da tarefa, host/porta conforme o provedor, endpoint só fora da AWS, teste
+  opcional somente leitura de banco e S3, orientação quando algo falha após
+  salvar as credenciais e resumo final.
+- `no_check_bucket = true` no `rclone.conf` gerado.
+- RUNBOOK com a política IAM mínima em JSON e o uso de cada permissão.
+
 ## [1.0.0] - 2026-11-17
 
 ### Alterado — incompatível com a linha 0.x

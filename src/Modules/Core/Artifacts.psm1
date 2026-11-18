@@ -166,7 +166,8 @@ function Publish-DBPackage {
         $name = "$base.7z.age"
         $payload = Join-Path $bundle $name
         Move-Item -LiteralPath $temp -Destination $payload -ErrorAction Stop
-        $remote = '{0}/{1}/{2}/{3}/{4}' -f $Configuration.Storage.RemoteRoot.TrimEnd('/'), $Configuration.InstanceName, $Job.Id, $Result.StartedAtUtc.ToString('yyyy/MM/dd'), $name
+        # RemoteRoot is the instance's complete destination (bucket/prefix).
+        $remote = '{0}/{1}/{2}/{3}' -f $Configuration.Storage.RemoteRoot, $Job.Id, $Result.StartedAtUtc.ToString('yyyy/MM/dd'), $name
         # One read yields size, SHA-256 (local integrity) and MD5 (remote check).
         $digest = Get-DBFileDigest -Path $payload
         Write-DBJson (Join-Path $bundle 'state.json') @{
@@ -260,7 +261,7 @@ function Get-DBPendingSummary {
 
 function Publish-DBLog {
     param([Collections.IDictionary] $Configuration, $Runtime, [double] $TimeoutSeconds = 900)
-    $remote = '{0}/{1}/Logs/{2}/{3}' -f $Configuration.Storage.RemoteRoot.TrimEnd('/'), $Configuration.InstanceName, [DateTime]::UtcNow.ToString('yyyy/MM/dd'), [IO.Path]::GetFileName($Runtime.LogPath)
+    $remote = '{0}/Logs/{1}/{2}' -f $Configuration.Storage.RemoteRoot, [DateTime]::UtcNow.ToString('yyyy/MM/dd'), [IO.Path]::GetFileName($Runtime.LogPath)
     $null = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath $Runtime.LogPath -RemotePath $remote -TimeoutSeconds $TimeoutSeconds
 }
 

@@ -1,4 +1,4 @@
-# DBBackup — runbook v1.0.0
+# DBBackup — runbook v1.1.0
 
 ## Dependências e instalação
 
@@ -36,8 +36,27 @@ DBBackup/
 
 ## Configuração e credenciais
 
-O setup pergunta caminhos das ferramentas, banco e destino rclone. Cria somente
-secrets ausentes; nunca substitui credenciais existentes. Para alterá-las, edite
+O setup é guiado e valida cada resposta na hora:
+
+1. Nome da instância: identifica a configuração no servidor (pasta `Instances` e
+   tarefas). Não define a pasta no S3.
+2. Executáveis (mysql/mysqldump ou dbbackup, 7z, age, rclone): o caminho precisa
+   existir; o setup sugere instalações encontradas em Program Files.
+3. Nome do banco (DBN no SQL Anywhere), obrigatório.
+4. Bucket S3 e prefixo dentro dele (Enter mantém a sugestão; `/` usa a raiz do
+   bucket). O destino resultante é mostrado antes de continuar.
+5. Horário diário da tarefa (quando a agenda tem uma única tarefa diária).
+6. Credenciais ausentes: banco, S3 (provedor, endpoint só fora da AWS, chaves,
+   região) e destinatários age.
+7. Teste opcional e somente leitura: login no banco (MySQL `SELECT 1`, SQL
+   Anywhere `dbping -d`) e listagem do prefixo no S3. Nada é gravado no bucket.
+8. Diagnóstico local, plano das tarefas (confirmar com SIM) e resumo final com o
+   comando do primeiro backup manual.
+
+Se algo falhar depois de gravar as credenciais, o setup informa que nada precisa
+ser digitado de novo: corrija e rode `Aplicar-Configuracao.bat` com o caminho do
+`config.psd1`. O setup cria somente secrets ausentes; nunca substitui
+credenciais existentes. Para alterá-las, edite
 os arquivos privados e reaplique a configuração. Todo arquivo de credenciais deve
 ficar dentro de Secrets da própria instância. Os arquivos não são um cofre
 criptografado: contêm opções nativas protegidas por ACL NTFS para SYSTEM e
@@ -54,23 +73,94 @@ SQL Anywhere usa `Secrets/sqlanywhere.options`, uma linha (substitua os valores)
 -c "UID='REPLACE_USER';PWD='REPLACE_PASSWORD';HOST='REPLACE_HOST:2638';DBN='REPLACE_DATABASE'"
 ```
 
-UID, PWD, HOST e DBN são obrigatórios; DBN corresponde a Database.Name. SERVER e
-CHARSET são opcionais. Para servidor local por memória compartilhada, SERVER
-(ou ENG) pode substituir HOST; um dos dois é obrigatório. DSN, parâmetros de
+UID, PWD e DBN são obrigatórios; DBN corresponde a Database.Name. Informe HOST
+(host:porta) para servidor em rede ou SERVER (ou ENG) para servidor local por
+memória compartilhada; um dos dois é obrigatório. CHARSET é opcional. DSN, parâmetros de
 startup e flags de truncagem/rotação não são aceitos nesse arquivo. Valores não
 podem conter aspas duplas ou quebras de linha; aspas simples internas são
 duplicadas. São esperados ao menos um .db (principal e dbspaces adicionais) e um
 .log não vazios. A rotina não abre a cópia do banco. Em falha do dbbackup, a
 saída da ferramenta vai para o log sem a senha.
 
-S3 usa `Secrets/rclone.conf`; o destino tem forma `remote:bucket/prefix`.
-O fluxo usa copyto e, em seguida, `rclone lsjson --hash` da pasta datada para
-conferir tamanho e MD5 do objeto enviado (sem reler o arquivo local nem baixar o
-objeto), sem sync ou remoção remota e sem exigir listagem do bucket inteiro. Configurar um remote não comprova acesso ao bucket. Mantenha
-os remotes antigos enquanto houver pendências que os referenciem. O setup
-pergunta o provedor S3 do rclone (AWS, Wasabi, Minio...) e um endpoint opcional.
+### Destino S3
+
+S3 usa `Secrets/rclone.conf`. `Storage.RemoteRoot` (`remote:bucket/prefixo`) é o
+destino completo da instância; o nome da instância **não** é acrescentado:
+
+```text
+<bucket>/<prefixo>/<trabalho>/aaaa/mm/dd/DBBackup_<UTC>_<instância>_<trabalho>_<execução>_<papel>.7z.age
+<bucket>/<prefixo>/Logs/aaaa/mm/dd/DBBackupLog_<UTC>_<execução>.log
+```
+
+Exemplo: `s3:assessoriatech-backups-seven-prod/ASSESSORIA` grava em
+`ASSESSORIA/database/2026/11/18/...`. Cada instância do servidor precisa de um
+prefixo próprio (maiúsculas e minúsculas diferenciam); o setup recusa destinos
+iguais ou aninhados. Mantenha os remotes antigos enquanto houver pendências que
+os referenciem.
+
+O envio usa `rclone copyto` e, em seguida, `rclone lsjson --hash` da pasta
+datada para conferir tamanho e MD5 do objeto (sem reler o arquivo local nem
+baixar o objeto). Não há sync nem remoção remota. O `rclone.conf` gerado pelo
+setup inclui `no_check_bucket = true`, para o rclone nunca tentar criar o bucket.
+O provedor S3 (AWS, Wasabi, Minio...) é perguntado; o endpoint só fora da AWS.
 `Storage.Destination` (padrão `s3`) é apenas o rótulo de destino nas métricas.
 Configure a expiração remota com regras de ciclo de vida do bucket.
+
+### Política IAM mínima
+
+Um usuário IAM por cliente/prefixo, com esta política (troque `<bucket>` e
+`<prefixo>`; o mesmo prefixo de `Storage.RemoteRoot`):
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "BucketLocation",
+            "Effect": "Allow",
+            "Action": ["s3:GetBucketLocation"],
+            "Resource": "arn:aws:s3:::<bucket>"
+        },
+        {
+            "Sid": "ListOnlyPrefix",
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": "arn:aws:s3:::<bucket>",
+            "Condition": { "StringLike": { "s3:prefix": ["<prefixo>", "<prefixo>/*"] } }
+        },
+        {
+            "Sid": "MultipartBucketAccess",
+            "Effect": "Allow",
+            "Action": ["s3:ListBucketMultipartUploads"],
+            "Resource": "arn:aws:s3:::<bucket>"
+        },
+        {
+            "Sid": "ObjectAccess",
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts"
+            ],
+            "Resource": "arn:aws:s3:::<bucket>/<prefixo>/*"
+        }
+    ]
+}
+```
+
+| Permissão | Uso no DBBackup |
+| --- | --- |
+| `s3:PutObject` | Enviar pacotes e logs, inclusive em partes (multipart). |
+| `s3:ListBucket` (só no prefixo) | Conferir o objeto enviado na pasta datada e testar o acesso no setup. Sem ela, a AWS responde "acesso negado" em vez de "não existe". |
+| `s3:GetObject` | Ler o MD5 de objetos enviados em partes; baixar na restauração. |
+| `s3:AbortMultipartUpload`, `s3:ListMultipartUploadParts`, `s3:ListBucketMultipartUploads` | Cancelar ou retomar uploads grandes interrompidos. |
+| `s3:GetBucketLocation` | Descobrir a região do bucket. |
+
+Não conceda `s3:DeleteObject` nem `s3:CreateBucket`: o DBBackup nunca apaga nem
+cria nada no bucket, e sem essas permissões um servidor comprometido não apaga
+os backups. Para o SQL Anywhere (ou outro cliente), reutilize a política com o
+prefixo da instância correspondente, de preferência com outro usuário IAM.
 
 `Secrets/recipients.txt` contém um destinatário age público nativo por linha;
 comentários iniciados por # são aceitos. O setup valida os destinatários antes
@@ -162,8 +252,11 @@ Schedule = @{ Tasks = @(
 ```
 
 Há agenda diária, semanal e mensal (DaysOfMonth 1..31 ou Last). Cada tarefa usa
-trabalho explícito e roda como SYSTEM em `\DBBackup\<instância>\`. Apply mostra o
-plano e exige SIM. Tarefas de outra configuração causam conflito. Sem Schedule,
+trabalho explícito e roda como SYSTEM na pasta `\DBBackup\` do Agendador, com o
+nome `<instância>-<tarefa>` (ex.: `ASSESSORIA-database-daily`). Todas as
+instâncias compartilham essa pasta; cada uma só altera ou remove as próprias
+tarefas, identificadas pela marca de dono na descrição. Uma tarefa de outra
+configuração com o mesmo nome causa conflito. Apply mostra o plano e exige SIM. Sem Schedule,
 a agenda é ignorada; Tasks vazio remove somente as tarefas próprias. Tarefas da
 mesma instância no mesmo horário disputam o lock; escolha horários distintos ou
 execute `-All` manualmente. Antes de remover um trabalho, resolva suas pendências
