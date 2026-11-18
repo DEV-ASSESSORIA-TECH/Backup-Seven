@@ -72,6 +72,46 @@ Describe 'DBBackup task identity and reconciliation' {
         }
     }
 }
+Describe 'Task Scheduler COM paths' {
+    BeforeEach {
+        # Mirrors ITaskService.GetFolder: a trailing separator is an invalid
+        # name (0x8007007B); an absent folder is "not found" (0x80070002).
+        $script:Requested = [Collections.Generic.List[string]]::new()
+        $script:Registered = [Collections.Generic.List[string]]::new()
+        $script:Existing = [Collections.Generic.HashSet[string]]::new([string[]]@('\'))
+        function New-FakeFolder([string] $Path) {
+            $folder = [pscustomobject]@{ Path = $Path }
+            # COM-shaped methods; extra COM arguments arrive in $args and are ignored.
+            $folder | Add-Member ScriptMethod CreateFolder { $name = $args[0]; $child = if ($this.Path -eq '\') { "\$name" } else { "$($this.Path)\$name" }; $null = $script:Existing.Add($child); New-FakeFolder $child }
+            $folder | Add-Member ScriptMethod GetTasks { @() }
+            $folder | Add-Member ScriptMethod SetSecurityDescriptor { }
+            $folder | Add-Member ScriptMethod RegisterTask { $script:Registered.Add("$($this.Path)|$($args[0])") }
+            $folder | Add-Member ScriptMethod DeleteTask { }
+            $folder
+        }
+        $script:Service = [pscustomobject]@{}
+        $script:Service | Add-Member ScriptMethod GetFolder {
+            param($Path)
+            $script:Requested.Add($Path)
+            if ($Path.Length -gt 1 -and $Path.EndsWith('\')) { throw [Runtime.InteropServices.COMException]::new('invalid name', -2147024773) }
+            if (-not $script:Existing.Contains($Path)) { throw [Runtime.InteropServices.COMException]::new('not found', -2147024894) }
+            New-FakeFolder $Path
+        }
+        Mock New-DBSchedulerService { $script:Service } -ModuleName Schedule
+    }
+    It 'reads a missing instance folder without a trailing separator' {
+        @(Get-DBSchedulerSnapshot (Get-DBTaskFolder 'ASSESSORIA')).Count | Should -Be 0
+        $script:Requested | Should -Be @('\DBBackup\ASSESSORIA')
+    }
+    It 'creates the folders and registers tasks using valid COM paths' {
+        $c=@{InstanceName='ASSESSORIA';ConfigPath='C:\DBBackup\Instances\ASSESSORIA\config.psd1';Jobs=@([pscustomobject]@{Id='database'});Schedule=@{Tasks=@(@{Name='daily';Job='database';At='19:00'})}}
+        $plan=@(Get-TestPlan $c)
+        Invoke-DBSchedulePlan -Configuration $c -Plan $plan
+        $script:Requested | Where-Object { $_.Length -gt 1 -and $_.EndsWith('\') } | Should -BeNullOrEmpty
+        $script:Registered | Should -Be @('\DBBackup\ASSESSORIA|daily')
+        ConvertTo-DBSchedulerFolderPath '\' | Should -Be '\'
+    }
+}
 Describe 'Unified setup and secrets' {
     BeforeEach {
         $script:Instances=Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))

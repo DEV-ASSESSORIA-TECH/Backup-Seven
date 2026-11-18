@@ -305,11 +305,30 @@ function Get-DBXmlShape {
     return $Element.LocalName + '(' + (($children | ForEach-Object { Get-DBXmlShape $_ }) -join ',') + ')'
 }
 
-function Get-DBSchedulerSnapshot {
-    param([string] $FolderPath)
+function New-DBSchedulerService {
+    <# Connected Task Scheduler COM service; a seam so tests can simulate it. #>
     $service = New-Object -ComObject 'Schedule.Service'
     $service.Connect()
-    try { $folder = $service.GetFolder($FolderPath) }
+    return $service
+}
+
+function ConvertTo-DBSchedulerFolderPath {
+    <#
+    Get-DBTaskFolder returns the display form with a trailing separator
+    (\DBBackup\<instance>\). ITaskService.GetFolder rejects a trailing
+    separator with 0x8007007B (invalid name), so it is removed for COM calls;
+    the root folder stays '\'.
+    #>
+    param([Parameter(Mandatory)][string] $FolderPath)
+    $trimmed = $FolderPath.TrimEnd('\')
+    if ([string]::IsNullOrEmpty($trimmed)) { return '\' }
+    return $trimmed
+}
+
+function Get-DBSchedulerSnapshot {
+    param([string] $FolderPath)
+    $service = New-DBSchedulerService
+    try { $folder = $service.GetFolder((ConvertTo-DBSchedulerFolderPath $FolderPath)) }
     catch {
         if (Test-DBMissingTaskFolder $_.Exception) { return @() }
         throw
@@ -328,15 +347,14 @@ function Test-DBMissingTaskFolder {
 
 function Invoke-DBSchedulePlan {
     param([Collections.IDictionary] $Configuration, [AllowEmptyCollection()][object[]] $Plan)
-    $service = New-Object -ComObject 'Schedule.Service'
-    $service.Connect()
+    $service = New-DBSchedulerService
     $root = $service.GetFolder('\')
     try { $parent = $service.GetFolder('\DBBackup') }
     catch {
         if (-not (Test-DBMissingTaskFolder $_.Exception)) { throw }
         $parent = $root.CreateFolder('DBBackup', $script:TaskSecurity)
     }
-    $path = Get-DBTaskFolder $Configuration.InstanceName
+    $path = ConvertTo-DBSchedulerFolderPath (Get-DBTaskFolder $Configuration.InstanceName)
     try { $folder = $service.GetFolder($path) }
     catch {
         if (-not (Test-DBMissingTaskFolder $_.Exception)) { throw }
@@ -349,4 +367,4 @@ function Invoke-DBSchedulePlan {
     }
 }
 
-Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun, Get-DBTaskExecutionLimit
+Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, ConvertTo-DBSchedulerFolderPath, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun, Get-DBTaskExecutionLimit
