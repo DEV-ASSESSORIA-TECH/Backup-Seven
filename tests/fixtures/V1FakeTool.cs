@@ -158,6 +158,16 @@ internal static class FakeExternalTool
 
         if (args.Length > 0 && args[0] == "lsjson")
         {
+            if (Array.IndexOf(args, "--include") < 0)
+            {
+                // Prefix access check: a listing without a file filter.
+                var accessExit = ExitCode("DBBACKUP_FAKE_RCLONE_LIST_ACCESS_EXIT");
+                if (accessExit == 0)
+                {
+                    Console.WriteLine("[]");
+                }
+                return accessExit;
+            }
             var include = args[Array.IndexOf(args, "--include") + 1].TrimStart('/');
             var listExit = ExitCode(include.EndsWith(".log", StringComparison.OrdinalIgnoreCase) ? "DBBACKUP_FAKE_RCLONE_LOG_CHECK_EXIT" : "DBBACKUP_FAKE_RCLONE_CHECK_EXIT");
             if (listExit != 0)

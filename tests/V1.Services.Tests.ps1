@@ -249,6 +249,14 @@ Context 'Storage module' {
         Get-Content -LiteralPath $script:InvocationLog -Raw | Should -Not -Match '(?m)^check\|'
     }
 
+    It 'checks read access to the destination prefix without writing' {
+        (Test-DBStorageAccess -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -RemoteRoot 's3:bucket/ASSESSORIA').Ok | Should -BeTrue
+        Get-Content -LiteralPath $script:InvocationLog -Raw | Should -Match '(?m)^lsjson\|s3:bucket/ASSESSORIA\|'
+        $env:DBBACKUP_FAKE_RCLONE_LIST_ACCESS_EXIT = '1'
+        try { (Test-DBStorageAccess -RclonePath $script:Rclone -ConfigPath $script:RcloneConfig -RemoteRoot 's3:bucket/ASSESSORIA').Ok | Should -BeFalse }
+        finally { $env:DBBACKUP_FAKE_RCLONE_LIST_ACCESS_EXIT = $null }
+    }
+
     It 'computes SHA-256 and MD5 in one pass' {
         $file = Join-Path $script:TestRoot 'digest.bin'
         Set-Content -LiteralPath $file -Value 'digest me' -NoNewline

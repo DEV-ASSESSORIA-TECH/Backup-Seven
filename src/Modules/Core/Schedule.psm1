@@ -16,9 +16,19 @@ function Get-DBTaskOwner {
 }
 
 function Get-DBTaskFolder {
-    param([string] $InstanceName)
+    <#
+    Every instance registers its tasks directly in \DBBackup\, named
+    <instance>-<task>. Ownership comes from the [owner:...] marker in each
+    task description, never from the folder.
+    #>
+    return '\DBBackup\'
+}
+
+function Get-DBTaskRegisteredName {
+    param([Parameter(Mandatory)][string] $InstanceName, [Parameter(Mandatory)][string] $TaskName)
     Assert-DBIdentifier $InstanceName
-    return "\DBBackup\$InstanceName\"
+    Assert-DBIdentifier $TaskName
+    return "$InstanceName-$TaskName"
 }
 
 function Get-DBScheduleTask {
@@ -61,7 +71,8 @@ function Get-DBScheduleTask {
             if ($entry.Enabled -isnot [bool]) { throw 'Enabled must be boolean.' }
             $enabled = $entry.Enabled
         }
-        $result += [pscustomobject]@{Name=$entry.Name;Job=$entry.Job;At=$entry.At;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled}
+        $registered = Get-DBTaskRegisteredName -InstanceName $Configuration.InstanceName -TaskName $entry.Name
+        $result += [pscustomobject]@{Name=$entry.Name;RegisteredName=$registered;Job=$entry.Job;At=$entry.At;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled}
     }
     return $result
 }
@@ -225,8 +236,9 @@ function Get-DBTaskDefinition {
 $body
 </Task>
 "@
+    $registeredProperty = $Task.PSObject.Properties['RegisteredName']
     [pscustomobject]@{
-        Name      = $Task.Name
+        Name      = if ($null -ne $registeredProperty -and $registeredProperty.Value) { [string] $registeredProperty.Value } else { $Task.Name }
         Hash      = $hash
         Xml       = $xml.Replace("`r`n", "`n")
         Arguments = $arguments
@@ -255,15 +267,24 @@ function Get-DBSchedulePlan {
     $owner = Get-DBTaskOwner $Configuration.ConfigPath
     $limitHours = Get-DBTaskExecutionLimit $Configuration
     $plan = @()
+    # The \DBBackup\ folder is shared by every instance: only tasks carrying
+    # this configuration's owner marker are compared, updated or removed.
+    $owned = @()
+    $foreign = @()
     foreach ($old in $Existing) {
-        [xml] $xml = $old.Xml
-        if ([string] $xml.Task.RegistrationInfo.Description -notmatch "\[owner:$owner\]") {
-            throw "Task ownership conflict: $($old.Name). No tasks were changed."
+        $description = ''
+        try { [xml] $xml = $old.Xml; $description = [string] $xml.Task.RegistrationInfo.Description } catch { $description = '' }
+        if ($description -match "\[owner:$owner\]") { $owned += $old } else { $foreign += $old }
+    }
+    foreach ($task in $tasks) {
+        # Task Scheduler names are case-insensitive.
+        if (@($foreign | Where-Object { $_.Name -ieq $task.RegisteredName }).Count -gt 0) {
+            throw "Task name conflict: $($task.RegisteredName) already exists in $(Get-DBTaskFolder) and belongs to another configuration. No tasks were changed."
         }
     }
     foreach ($task in $tasks) {
         $definition = Get-DBTaskDefinition -Task $task -PwshPath $PwshPath -ScriptPath $ScriptPath -WorkingDirectory $WorkingDirectory -ConfigPath $Configuration.ConfigPath -ExecutionLimitHours $limitHours
-        $old = @($Existing | Where-Object Name -EQ $task.Name)
+        $old = @($owned | Where-Object { $_.Name -ieq $task.RegisteredName })
         $action = 'Create'
         if ($old.Count -gt 0) {
             # Compare execution-relevant XML leaves; do not trust the description
@@ -290,10 +311,10 @@ function Get-DBSchedulePlan {
             if (-not $changed) { continue }
             $action = 'Update'
         }
-        $plan += [pscustomobject]@{Action=$action;Name=$task.Name;Definition=$definition}
+        $plan += [pscustomobject]@{Action=$action;Name=$task.RegisteredName;Definition=$definition}
     }
-    foreach ($old in $Existing) {
-        if ($old.Name -notin @($tasks | ForEach-Object Name)) { $plan += [pscustomobject]@{Action='Remove';Name=$old.Name;Definition=$null} }
+    foreach ($old in $owned) {
+        if ($old.Name -notin @($tasks | ForEach-Object RegisteredName)) { $plan += [pscustomobject]@{Action='Remove';Name=$old.Name;Definition=$null} }
     }
     return $plan
 }
@@ -305,11 +326,30 @@ function Get-DBXmlShape {
     return $Element.LocalName + '(' + (($children | ForEach-Object { Get-DBXmlShape $_ }) -join ',') + ')'
 }
 
-function Get-DBSchedulerSnapshot {
-    param([string] $FolderPath)
+function New-DBSchedulerService {
+    <# Connected Task Scheduler COM service; a seam so tests can simulate it. #>
     $service = New-Object -ComObject 'Schedule.Service'
     $service.Connect()
-    try { $folder = $service.GetFolder($FolderPath) }
+    return $service
+}
+
+function ConvertTo-DBSchedulerFolderPath {
+    <#
+    Get-DBTaskFolder returns the display form with a trailing separator
+    (\DBBackup\<instance>\). ITaskService.GetFolder rejects a trailing
+    separator with 0x8007007B (invalid name), so it is removed for COM calls;
+    the root folder stays '\'.
+    #>
+    param([Parameter(Mandatory)][string] $FolderPath)
+    $trimmed = $FolderPath.TrimEnd('\')
+    if ([string]::IsNullOrEmpty($trimmed)) { return '\' }
+    return $trimmed
+}
+
+function Get-DBSchedulerSnapshot {
+    param([string] $FolderPath)
+    $service = New-DBSchedulerService
+    try { $folder = $service.GetFolder((ConvertTo-DBSchedulerFolderPath $FolderPath)) }
     catch {
         if (Test-DBMissingTaskFolder $_.Exception) { return @() }
         throw
@@ -328,19 +368,18 @@ function Test-DBMissingTaskFolder {
 
 function Invoke-DBSchedulePlan {
     param([Collections.IDictionary] $Configuration, [AllowEmptyCollection()][object[]] $Plan)
-    $service = New-Object -ComObject 'Schedule.Service'
-    $service.Connect()
-    $root = $service.GetFolder('\')
-    try { $parent = $service.GetFolder('\DBBackup') }
-    catch {
-        if (-not (Test-DBMissingTaskFolder $_.Exception)) { throw }
-        $parent = $root.CreateFolder('DBBackup', $script:TaskSecurity)
+    # Defense in depth for the shared folder: a plan may only touch tasks named
+    # after this instance (Get-DBSchedulePlan already filtered by owner).
+    $prefix = "$($Configuration.InstanceName)-"
+    foreach ($item in $Plan) {
+        if (-not ([string] $item.Name).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Refusing to change task $($item.Name): it is not named after instance $($Configuration.InstanceName)." }
     }
-    $path = Get-DBTaskFolder $Configuration.InstanceName
-    try { $folder = $service.GetFolder($path) }
+    $service = New-DBSchedulerService
+    $root = $service.GetFolder('\')
+    try { $folder = $service.GetFolder((ConvertTo-DBSchedulerFolderPath (Get-DBTaskFolder))) }
     catch {
         if (-not (Test-DBMissingTaskFolder $_.Exception)) { throw }
-        $folder = $parent.CreateFolder($Configuration.InstanceName, $script:TaskSecurity)
+        $folder = $root.CreateFolder('DBBackup', $script:TaskSecurity)
     }
     $folder.SetSecurityDescriptor($script:TaskSecurity, 0)
     foreach ($item in $Plan) {
@@ -349,4 +388,4 @@ function Invoke-DBSchedulePlan {
     }
 }
 
-Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun, Get-DBTaskExecutionLimit
+Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBTaskRegisteredName, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, ConvertTo-DBSchedulerFolderPath, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun, Get-DBTaskExecutionLimit

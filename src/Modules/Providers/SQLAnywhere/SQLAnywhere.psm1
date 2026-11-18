@@ -98,4 +98,4 @@ function Invoke-DBSqlAnywhere {
         if (Test-Path -LiteralPath $secretRoot) { Remove-Item -LiteralPath $secretRoot -Recurse -Force -ErrorAction Stop }
     }
 }
-Export-ModuleMember -Function Read-DBSqlConnection, Invoke-DBSqlAnywhere
+Export-ModuleMember -Function Read-DBSqlConnection, Write-DBSqlOption, ConvertTo-DBSafeToolOutput, Invoke-DBSqlAnywhere

@@ -108,4 +108,25 @@ Describe 'DBBackup v1 instance configuration' {
         Set-DBPrivateDirectory (Join-Path $TestDrive 'brand-new')
         Should -Invoke Set-Acl -ModuleName Runtime -Times 3 -Exactly
     }
+    It 'treats RemoteRoot as the complete destination and rejects unsafe prefixes' {
+        ConvertTo-DBRemoteRoot 's3:bucket/ASSESSORIA/' | Should -BeExactly 's3:bucket/ASSESSORIA'
+        ConvertTo-DBRemoteRoot 's3:bucket' | Should -BeExactly 's3:bucket'
+        { ConvertTo-DBRemoteRoot 's3:' } | Should -Throw '*bucket*'
+        { ConvertTo-DBRemoteRoot 's3:bucket/../other' } | Should -Throw '*invalid path segment*'
+        { ConvertTo-DBRemoteRoot 's3:bucket//x' } | Should -Throw '*invalid path segment*'
+        Test-DBRemoteOverlap 's3:b/ASSESSORIA' 's3:b/ASSESSORIA' | Should -BeTrue
+        Test-DBRemoteOverlap 's3:b/ASSESSORIA' 's3:b/ASSESSORIA/sub' | Should -BeTrue
+        Test-DBRemoteOverlap 's3:b/ASSESSORIA' 's3:b/assessoria' | Should -BeFalse
+        Test-DBRemoteOverlap 's3:b/ASSESSORIA' 's3:b/ASSESSORIA-2' | Should -BeFalse
+    }
+    It 'refuses two instances writing to the same destination prefix' {
+        $other = Join-Path $TestDrive 'other/config.psd1'
+        $null = New-Item -ItemType Directory (Split-Path $other) -Force
+        $text = (Get-Content $script:Config -Raw).Replace('s3:REPLACE_BUCKET', 's3:bucket/ASSESSORIA')
+        Set-Content $other $text.Replace("InstanceName = 'MySQL'", "InstanceName = 'Other'")
+        Set-Content $script:Config $text
+        { Assert-DBInstanceIsolation (Read-DBConfiguration $script:Config) $TestDrive } | Should -Throw '*remote destination*'
+        Set-Content $script:Config $text.Replace('s3:bucket/ASSESSORIA', 's3:bucket/MULTI-COPIAS')
+        { Assert-DBInstanceIsolation (Read-DBConfiguration $script:Config) $TestDrive } | Should -Not -Throw
+    }
 }
