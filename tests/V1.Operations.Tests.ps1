@@ -1,7 +1,7 @@
 BeforeAll {
     $script:Repo = Split-Path -Parent $PSScriptRoot
     . (Join-Path $PSScriptRoot 'V1.TestSupport.ps1')
-    foreach ($module in @('Configuration','Runtime','Process','Capacity','Monitoring','Observation','Runner')) { Import-Module "$script:Repo/src/Modules/Core/$module.psm1" }
+    foreach ($module in @('Configuration','Runtime','Process','Capacity','Monitoring','Observation','Runner')) { Import-Module "$script:Repo/src/App/Modules/Core/$module.psm1" }
 }
 Describe 'Bounded native tools and disk checks' {
     BeforeAll { $script:FixtureConfig = New-DBTestFixture (Join-Path $TestDrive 'opsfixture') $script:Repo }

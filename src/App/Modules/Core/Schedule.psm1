@@ -38,15 +38,19 @@ function Get-DBScheduleTask {
     $result = @()
     $names = @{}
     foreach ($entry in $Configuration.Schedule.Tasks) {
-        if ($entry -isnot [Collections.IDictionary]) { throw 'Schedule entries must be hashtables with explicit Job.' }
+        if ($entry -isnot [Collections.IDictionary]) { throw 'Schedule entries must be hashtables with explicit Jobs.' }
         foreach ($key in $entry.Keys) {
-            if ($key -notin @('Name','Job','At','Frequency','Days','DaysOfMonth','Enabled')) { throw "Unknown schedule key: $key" }
+            if ($key -notin @('Name','Jobs','At','Frequency','Days','DaysOfMonth','Enabled')) { throw "Unknown schedule key: $key" }
         }
-        foreach ($key in @('Name','Job','At')) { if (-not $entry.Contains($key)) { throw "Missing schedule field: $key" } }
+        foreach ($key in @('Name','Jobs','At')) { if (-not $entry.Contains($key)) { throw "Missing schedule field: $key" } }
         Assert-DBIdentifier $entry.Name
         if ($names.ContainsKey($entry.Name)) { throw 'Duplicate task name.' }
         $names[$entry.Name] = $true
-        if ($entry.Job -cnotin @($Configuration.Jobs.Id)) { throw "Unknown schedule job: $($entry.Job)" }
+        # Jobs of one task run one after another in the same execution.
+        $taskJobs = @($entry.Jobs | ForEach-Object { [string] $_ })
+        if ($taskJobs.Count -eq 0) { throw "Schedule task $($entry.Name) has no jobs." }
+        foreach ($jobId in $taskJobs) { if ($jobId -cnotin @($Configuration.Jobs.Id)) { throw "Unknown schedule job: $jobId" } }
+        if (@($taskJobs | Select-Object -Unique).Count -ne $taskJobs.Count) { throw "Schedule task $($entry.Name) repeats a job." }
         if ($entry.At -notmatch '^([01]\d|2[0-3]):[0-5]\d$') { throw 'Invalid schedule time.' }
         $frequency = if ($entry.Contains('Frequency')) { [string] $entry.Frequency } else { 'Daily' }
         if ($frequency -cnotin @('Daily','Weekly','Monthly')) { throw 'Invalid schedule frequency.' }
@@ -72,7 +76,7 @@ function Get-DBScheduleTask {
             $enabled = $entry.Enabled
         }
         $registered = Get-DBTaskRegisteredName -InstanceName $Configuration.InstanceName -TaskName $entry.Name
-        $result += [pscustomobject]@{Name=$entry.Name;RegisteredName=$registered;Job=$entry.Job;At=$entry.At;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled}
+        $result += [pscustomobject]@{Name=$entry.Name;RegisteredName=$registered;Jobs=$taskJobs;At=$entry.At;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled}
     }
     return $result
 }
@@ -101,7 +105,7 @@ function Get-DBScheduleMaxGap {
         [Parameter(Mandatory)][string] $Job
     )
 
-    $covering = @($Tasks | Where-Object { $_.Enabled -and $_.Job -eq $Job })
+    $covering = @($Tasks | Where-Object { $_.Enabled -and $Job -cin @($_.Jobs) })
     if ($covering.Count -eq 0) { return $null }
 
     $start = [DateTime]::new(2026, 1, 1)
@@ -133,7 +137,7 @@ function Get-DBScheduleNextRun {
         [Parameter(Mandatory)][DateTime] $After
     )
 
-    $covering = @($Tasks | Where-Object { $_.Enabled -and $_.Job -eq $Job })
+    $covering = @($Tasks | Where-Object { $_.Enabled -and $Job -cin @($_.Jobs) })
     if ($covering.Count -eq 0) { return $null }
 
     $next = $null
@@ -172,7 +176,7 @@ function Get-DBTaskDefinition {
         [ValidateRange(1, 72)][int] $ExecutionLimitHours = 12
     )
 
-    $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -ConfigPath `"$ConfigPath`" -Job $($Task.Job)"
+    $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -ConfigPath `"$ConfigPath`" -Job $(@($Task.Jobs) -join ',')"
     $schedule = switch ($Task.Frequency) {
         'Daily' { '<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>' }
         'Weekly' {

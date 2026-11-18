@@ -49,9 +49,22 @@ function Set-DBPrivateDirectory {
     Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
 }
 
+function New-DBLogPath {
+    <# Logs\<instance>\yyyy-MM-dd_HH-mm-ss.log in local time; -2, -3... if taken. #>
+    param([string] $LogRoot)
+    $stamp = [DateTime]::Now.ToString('yyyy-MM-dd_HH-mm-ss', [Globalization.CultureInfo]::InvariantCulture)
+    $path = Join-Path $LogRoot "$stamp.log"
+    for ($n = 2; (Test-Path -LiteralPath $path) -and $n -lt 1000; $n++) { $path = Join-Path $LogRoot "$stamp-$n.log" }
+    return $path
+}
+
 function New-DBRuntime {
     param([Collections.IDictionary] $Configuration)
-    foreach ($path in $Configuration.Paths.Values) { Set-DBPrivateDirectory $path }
+    # Runtime holds plaintext work and pending bundles: private. Completed
+    # (encrypted bundles) and Logs (sanitized) are operator folders and keep
+    # the permissions inherited from the installation.
+    Set-DBPrivateDirectory $Configuration.Paths.RuntimeRoot
+    foreach ($path in @($Configuration.Paths.CompletedRoot, $Configuration.Paths.LogRoot)) { $null = New-Item -ItemType Directory -Path $path -Force }
     $runtime = $Configuration.Paths.RuntimeRoot
     foreach ($name in @('Pending', 'Work', 'Staging')) { Set-DBPrivateDirectory (Join-Path $runtime $name) }
     try {
@@ -66,7 +79,7 @@ function New-DBRuntime {
             RunId = $id; Lock = $lock; Work = $work
             Pending = Join-Path $runtime 'Pending'; Staging = Join-Path $runtime 'Staging'
             Completed = $Configuration.Paths.CompletedRoot
-            LogPath = Join-Path $Configuration.Paths.LogRoot "DBBackupLog_$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))_$id.log"
+            LogPath = New-DBLogPath $Configuration.Paths.LogRoot
         }
     }
     catch { $lock.Dispose(); throw }
@@ -90,7 +103,8 @@ function Clear-DBStaleRuntime {
     $skipped = @()
     $targets = @(
         @{ Root = (Split-Path -Parent $Runtime.Work); Pattern = '^[a-f0-9]{32}$' }
-        @{ Root = $Runtime.Staging; Pattern = '^DBBackup_[A-Za-z0-9_-]+$' }
+        # 2.0 names start with the local timestamp; DBBackup_* covers 1.x leftovers.
+        @{ Root = $Runtime.Staging; Pattern = '^(DBBackup_[A-Za-z0-9_-]+|\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[A-Za-z0-9_-]+)$' }
     )
     foreach ($target in $targets) {
         if (-not (Test-Path -LiteralPath $target.Root -PathType Container)) { continue }

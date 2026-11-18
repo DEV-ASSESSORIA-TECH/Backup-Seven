@@ -1,0 +1,38 @@
+DBBackup {{VERSION}}
+====================
+
+Backup criptografado (7-Zip + age) de bancos MySQL, SQL Anywhere e pastas,
+enviado para S3 com rclone. Uma instancia agrupa jobs (cada banco ou pasta)
+com as mesmas credenciais S3, chaves age e agenda.
+
+Versao instalada: {{VERSION}}
+
+Repositorio e documentacao
+  Codigo:            https://github.com/DEV-ASSESSORIA-TECH/DBBackup
+  Esta versao:       https://github.com/DEV-ASSESSORIA-TECH/DBBackup/tree/v{{VERSION}}
+  Runbook (operacao): https://github.com/DEV-ASSESSORIA-TECH/DBBackup/blob/v{{VERSION}}/RUNBOOK.md
+  Mudancas:          https://github.com/DEV-ASSESSORIA-TECH/DBBackup/blob/v{{VERSION}}/CHANGELOG.md
+
+Requisitos
+  Windows com PowerShell 7.2+ (instalador MSI), 7-Zip, age e rclone.
+  MySQL: mysql.exe e mysqldump.exe. SQL Anywhere: dbbackup.exe 17.
+
+Como usar (clique duas vezes; cada um pede elevacao)
+  Setup.bat                 Cria uma instancia ou adiciona jobs a uma existente.
+  Aplicar-Configuracao.bat  Reaplica um config.psd1 editado (ACL, diagnostico, tarefas).
+  Diagnosticar.bat          Verificacoes locais, sem backup nem alteracoes.
+  Executar-Backup.bat       Executa agora todos os jobs de uma instancia.
+
+Pastas criadas ao lado deste arquivo
+  Instances\<instancia>\config.psd1   configuracao (pode ser editada)
+  Instances\<instancia>\Secrets\      credenciais (somente SYSTEM e Administradores)
+  Instances\<instancia>\Runtime\      trabalho temporario e pendencias (restrita)
+  Completed\<instancia>\<job>\        pacotes criptografados mantidos localmente
+  Logs\<instancia>\                   um log por execucao; a ultima linha e "RESULTADO: ..."
+
+Agendador de Tarefas: pasta \DBBackup\, tarefas <instancia>-<tarefa>.
+Codigos de saida: 0 sucesso, 1 falha, 2 configuracao, 3 ja em execucao,
+4 etapa auxiliar com falha, 5 backup degradado.
+
+Atualizacao: substitua a pasta App e os arquivos .bat. Nao apague Instances,
+Completed nem Logs.

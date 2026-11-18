@@ -16,7 +16,7 @@ if not defined PWSH (
     exit /b 1
 )
 title DBBackup
-"%PWSH%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup.ps1"
+"%PWSH%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0App\Setup.ps1"
 set "RESULT=%ERRORLEVEL%"
 pause
 exit /b %RESULT%

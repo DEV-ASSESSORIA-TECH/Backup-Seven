@@ -29,21 +29,40 @@ function Assert-DBIdentifier {
     }
 }
 
+function Get-DBDefaultPath {
+    <#
+    Install layout: <root>\Instances\<instance>\config.psd1. Runtime holds
+    plaintext work and stays private inside the instance; Completed and Logs
+    are operator folders at the root, one subfolder per instance.
+    #>
+    param([string] $InstanceName)
+    return @{ RuntimeRoot = 'Runtime'; CompletedRoot = "../../Completed/$InstanceName"; LogRoot = "../../Logs/$InstanceName" }
+}
+
 function Read-DBConfiguration {
+    <#
+    Schema 2: an instance (destination credentials, age recipients, schedule,
+    lock and folders) runs a list of jobs; each job has its own provider
+    (MySQL, SQLAnywhere or Directory) and its own remote destination.
+    #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $Path, [Collections.IDictionary] $Data)
     $Path = [IO.Path]::GetFullPath($Path)
     $c = if ($null -ne $Data) { $Data } else { Import-PowerShellDataFile -LiteralPath $Path }
-    if (-not $c.Contains('SchemaVersion') -or $c.SchemaVersion -ne 1) { throw 'SchemaVersion must be 1.' }
-    foreach ($key in @('InstanceName', 'Provider', 'Tools', 'Database', 'Storage', 'Encryption', 'Paths', 'Archive', 'Retention')) {
+    if (-not $c.Contains('SchemaVersion') -or $c.SchemaVersion -ne 2) {
+        if ($c.Contains('SchemaVersion') -and $c.SchemaVersion -eq 1) { throw 'Configuration schema 1 (DBBackup 1.x): run Setup to create the 2.0 configuration.' }
+        throw 'SchemaVersion must be 2.'
+    }
+    foreach ($key in @('InstanceName', 'Tools', 'Storage', 'Encryption', 'Jobs', 'Archive', 'Retention')) {
         if (-not $c.Contains($key)) { throw "Missing configuration key: $key" }
     }
     Assert-DBIdentifier $c.InstanceName
-    if ($c.Provider -cnotin @('MySQL', 'SQLAnywhere')) { throw 'Provider must be MySQL or SQLAnywhere.' }
-    foreach ($key in @('Tools', 'Database', 'Storage', 'Encryption', 'Paths', 'Archive', 'Retention')) {
+    if (-not $c.Contains('Paths')) { $c.Paths = Get-DBDefaultPath $c.InstanceName }
+    foreach ($key in @('Tools', 'Storage', 'Encryption', 'Paths', 'Archive', 'Retention')) {
         if ($c[$key] -isnot [Collections.IDictionary]) { throw "Section must be a hashtable: $key" }
     }
-    if (-not $c.Database.Contains('Name') -or [string]::IsNullOrWhiteSpace($c.Database.Name)) { throw 'Database.Name is required.' }
+    $defaultPaths = Get-DBDefaultPath $c.InstanceName
+    foreach ($key in $defaultPaths.Keys) { if (-not $c.Paths.Contains($key)) { $c.Paths[$key] = $defaultPaths[$key] } }
     $base = Split-Path -Parent $Path
     $c.ConfigPath = $Path
     $c.InstanceRoot = $base
@@ -65,18 +84,68 @@ function Read-DBConfiguration {
         }
     }
     foreach ($key in @($c.Tools.Keys)) { $c.Tools[$key] = Resolve-DBPath ([string] $c.Tools[$key]) $base }
-    foreach ($key in @('SevenZip', 'Age', 'Rclone')) {
-        if (-not $c.Tools.Contains($key)) { throw "Missing tool: $key" }
-    }
     $c.Storage.ConfigPath = Resolve-DBPath ([string] $c.Storage.ConfigPath) $base
-    $c.Storage.RemoteRoot = ConvertTo-DBRemoteRoot ([string] $c.Storage.RemoteRoot)
     $c.Encryption.RecipientsFile = Resolve-DBPath ([string] $c.Encryption.RecipientsFile) $base
-    $credentialKey = if ($c.Provider -eq 'MySQL') { 'DefaultsExtraFile' } else { 'ConnectionOptionsFile' }
-    $c.Database[$credentialKey] = Resolve-DBPath ([string] $c.Database[$credentialKey]) $base
-    foreach ($secret in @($c.Database[$credentialKey], $c.Storage.ConfigPath, $c.Encryption.RecipientsFile)) {
+    $secrets = @($c.Storage.ConfigPath, $c.Encryption.RecipientsFile)
+
+    $entries = @($c.Jobs)
+    if ($entries.Count -eq 0) { throw 'At least one job is required.' }
+    $jobs = @()
+    $ids = @{}
+    foreach ($entry in $entries) {
+        if ($entry -isnot [Collections.IDictionary]) { throw 'Each job must be a hashtable.' }
+        foreach ($key in $entry.Keys) {
+            if ($key -notin @('Id','Provider','RemoteRoot','Database','CredentialFile','ExtraArguments','SourcePath')) { throw "Unknown job key: $key" }
+        }
+        foreach ($key in @('Id','Provider','RemoteRoot')) { if (-not $entry.Contains($key)) { throw "Missing job field: $key" } }
+        $id = [string] $entry.Id
+        Assert-DBIdentifier $id
+        # Job IDs become folder names on Windows: unique without regard to case.
+        # 'Logs' is the remote folder of the run logs.
+        if ($ids.ContainsKey($id.ToLowerInvariant()) -or $id -ieq 'logs') { throw "Duplicate or reserved job ID: $id" }
+        $ids[$id.ToLowerInvariant()] = $true
+        $provider = [string] $entry.Provider
+        if ($provider -cnotin @('MySQL','SQLAnywhere','Directory')) { throw "Job $id`: Provider must be MySQL, SQLAnywhere or Directory." }
+        $remoteRoot = ConvertTo-DBRemoteRoot ([string] $entry.RemoteRoot)
+        $job = [ordered]@{
+            Id = $id; Provider = $provider; RemoteRoot = $remoteRoot; Destination = "$remoteRoot/$id"
+            Database = $null; CredentialFile = $null; ExtraArguments = @(); SourcePath = $null
+        }
+        if ($provider -eq 'Directory') {
+            foreach ($key in @('Database','CredentialFile','ExtraArguments')) { if ($entry.Contains($key)) { throw "Job $id`: $key is not valid for Directory." } }
+            if (-not $entry.Contains('SourcePath')) { throw "Job $id`: SourcePath is required." }
+            $source = Resolve-DBPath ([string] $entry.SourcePath) $base
+            foreach ($root in @($base) + $roots) {
+                if ((Test-DBPathWithin $source $root) -or (Test-DBPathWithin $root $source)) { throw "Job $id`: the directory source overlaps the instance or its state." }
+            }
+            $job.SourcePath = $source
+        }
+        else {
+            if ($entry.Contains('SourcePath')) { throw "Job $id`: SourcePath is only valid for Directory." }
+            if (-not $entry.Contains('Database') -or [string]::IsNullOrWhiteSpace([string] $entry.Database)) { throw "Job $id`: Database is required." }
+            if (-not $entry.Contains('CredentialFile')) { throw "Job $id`: CredentialFile is required." }
+            $job.Database = [string] $entry.Database
+            $job.CredentialFile = Resolve-DBPath ([string] $entry.CredentialFile) $base
+            $secrets += $job.CredentialFile
+            if ($entry.Contains('ExtraArguments')) {
+                if ($provider -ne 'MySQL') { throw "Job $id`: ExtraArguments is only valid for MySQL." }
+                $job.ExtraArguments = @($entry.ExtraArguments | ForEach-Object { [string] $_ })
+            }
+        }
+        $jobs += [pscustomobject] $job
+    }
+    for ($i = 0; $i -lt $jobs.Count; $i++) {
+        for ($j = $i + 1; $j -lt $jobs.Count; $j++) {
+            if (Test-DBRemoteOverlap $jobs[$i].Destination $jobs[$j].Destination) { throw "Jobs $($jobs[$i].Id) and $($jobs[$j].Id) share a remote destination." }
+        }
+    }
+    foreach ($secret in $secrets) {
         if (-not (Test-DBPathWithin $secret $c.SecretsRoot)) { throw 'Secret files must belong to this instance Secrets directory.' }
     }
-    if (-not $c.Database.Contains('ExtraArguments')) { $c.Database.ExtraArguments = @() }
+    $required = @('SevenZip', 'Age', 'Rclone')
+    if (@($jobs | Where-Object Provider -EQ 'MySQL').Count) { $required += @('MySql', 'MySqlDump') }
+    if (@($jobs | Where-Object Provider -EQ 'SQLAnywhere').Count) { $required += 'DbBackup' }
+    foreach ($key in $required) { if (-not $c.Tools.Contains($key)) { throw "Missing tool: $key" } }
     if ([int] $c.Archive.CompressionLevel -notin 0..9 -or [int] $c.Archive.CpuLimitPercent -notin 1..100) { throw 'Invalid Archive settings.' }
     foreach ($key in @('CompletedDays', 'LogDays')) {
         $value = 0
@@ -86,19 +155,6 @@ function Read-DBConfiguration {
     if ($c.Retention.KeepLocalPayload -isnot [bool]) { throw 'Retention.KeepLocalPayload must be boolean.' }
     if (-not $c.Storage.Contains('Destination')) { $c.Storage.Destination = 's3' }
     if ([string] $c.Storage.Destination -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$') { throw 'Storage.Destination must be a lowercase identifier.' }
-    $jobs = @([pscustomobject]@{ Id = 'database'; Provider = $c.Provider; SourcePath = $null })
-    if (-not $c.Contains('Directories')) { $c.Directories = @() }
-    $ids = @{ database = $true }
-    foreach ($entry in $c.Directories) {
-        Assert-DBIdentifier ([string] $entry.Id)
-        if ($ids.ContainsKey([string] $entry.Id)) { throw "Duplicate or reserved job ID: $($entry.Id)" }
-        $ids[[string] $entry.Id] = $true
-        $source = Resolve-DBPath ([string] $entry.SourcePath) $base
-        foreach ($root in @($base) + $roots) {
-            if ((Test-DBPathWithin $source $root) -or (Test-DBPathWithin $root $source)) { throw 'A directory source overlaps the instance or state.' }
-        }
-        $jobs += [pscustomobject]@{ Id = [string] $entry.Id; Provider = 'Directory'; SourcePath = $source }
-    }
     $c.Jobs = $jobs
     if (-not $c.Contains('Execution')) { $c.Execution = @{} }
     if ($c.Execution -isnot [Collections.IDictionary]) { throw 'Execution must be a hashtable.' }
@@ -172,13 +228,20 @@ function Assert-DBInstanceIsolation {
     if (-not (Test-Path -LiteralPath $InstancesRoot)) { return }
     foreach ($file in Get-ChildItem -LiteralPath $InstancesRoot -Filter config.psd1 -File -Recurse -ErrorAction Stop) {
         if ($file.FullName -eq $Configuration.ConfigPath) { continue }
+        # A 1.x configuration left beside 2.0 instances is not an active instance.
+        $schema = (Import-PowerShellDataFile -LiteralPath $file.FullName).SchemaVersion
+        if ($schema -ne 2) { continue }
         $other = Read-DBConfiguration $file.FullName
         if ($other.InstanceName -eq $Configuration.InstanceName) { throw "Duplicate InstanceName: $($other.InstanceName)" }
-        # Each instance owns its destination prefix: sharing it would mix jobs
-        # of different databases in the same dated folders.
-        $placeholder = $Configuration.Storage.RemoteRoot -match 'REPLACE_' -or $other.Storage.RemoteRoot -match 'REPLACE_'
-        if (-not $placeholder -and (Test-DBRemoteOverlap $Configuration.Storage.RemoteRoot $other.Storage.RemoteRoot)) {
-            throw "Instances share the remote destination $($other.Storage.RemoteRoot) ($($other.InstanceName)); use a distinct bucket or prefix."
+        # Each job owns its destination (<RemoteRoot>/<job>): sharing it would
+        # mix backups of different sources in the same dated folders.
+        foreach ($mine in $Configuration.Jobs) {
+            foreach ($theirs in $other.Jobs) {
+                if ($mine.Destination -match 'REPLACE_' -or $theirs.Destination -match 'REPLACE_') { continue }
+                if (Test-DBRemoteOverlap $mine.Destination $theirs.Destination) {
+                    throw "Job $($mine.Id) shares the remote destination $($theirs.Destination) with $($other.InstanceName)/$($theirs.Id); use a distinct bucket, prefix or job ID."
+                }
+            }
         }
         if ($Configuration.Monitoring.Enabled -and $other.Monitoring.Enabled -and $Configuration.Monitoring.Service -ceq $other.Monitoring.Service) {
             foreach ($id in $Configuration.Monitoring.BackupIds.Values) {
@@ -193,4 +256,4 @@ function Assert-DBInstanceIsolation {
     }
 }
 
-Export-ModuleMember -Function Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, ConvertTo-DBRemoteRoot, Test-DBRemoteOverlap, Assert-DBInstanceIsolation
+Export-ModuleMember -Function Get-DBDefaultPath, Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, ConvertTo-DBRemoteRoot, Test-DBRemoteOverlap, Assert-DBInstanceIsolation

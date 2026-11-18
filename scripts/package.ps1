@@ -33,17 +33,22 @@ try {
         if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) { throw 'Staged package file hash mismatch.' }
         $hashes[$entry.target] = $hash
     }
-    @{SchemaVersion=1;Product='DBBackup';Version=$version;Files=$hashes} | ConvertTo-Json -Depth 5 |
-        Set-Content -LiteralPath (Join-Path $staging 'PACKAGE-MANIFEST.json') -Encoding utf8
+    # The only document at the package root: installed version, links to the
+    # repository/runbook of this version and a short operator guide.
+    $readme = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'LEIA-ME.template.txt') -Raw).Replace('{{VERSION}}', $version)
+    $readme = ($readme -replace "`r?`n", "`r`n")
+    $readmePath = Join-Path $staging 'LEIA-ME.txt'
+    [IO.File]::WriteAllText($readmePath, $readme, [Text.UTF8Encoding]::new($true))
+    if (-not $targets.Add('LEIA-ME.txt')) { throw 'LEIA-ME.txt is generated and cannot be listed.' }
+    $hashes['LEIA-ME.txt'] = (Get-FileHash -LiteralPath $readmePath -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.Compression.ZipFile]::CreateFromDirectory($staging,$temporaryZip,[IO.Compression.CompressionLevel]::Optimal,$false)
     $zip = [IO.Compression.ZipFile]::OpenRead($temporaryZip)
     try {
         $actual = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
-        $expected = @($targets) + @('PACKAGE-MANIFEST.json')
+        $expected = @($targets)
         if (@(Compare-Object ($expected | Sort-Object) ($actual | Sort-Object)).Count) { throw 'ZIP entry allowlist mismatch.' }
         foreach ($entry in $zip.Entries) {
             $name = $entry.FullName.Replace('\','/')
-            if ($name -eq 'PACKAGE-MANIFEST.json') { continue }
             $stream = $entry.Open()
             $sha = [Security.Cryptography.SHA256]::Create()
             try {

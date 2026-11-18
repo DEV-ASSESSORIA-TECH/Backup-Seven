@@ -1,17 +1,5 @@
 [
   {
-    "source": "src/Backup.ps1",
-    "target": "Backup.ps1"
-  },
-  {
-    "source": "src/Setup.ps1",
-    "target": "Setup.ps1"
-  },
-  {
-    "source": "src/Diagnose.ps1",
-    "target": "Diagnose.ps1"
-  },
-  {
     "source": "src/Setup.bat",
     "target": "Setup.bat"
   },
@@ -20,107 +8,103 @@
     "target": "Aplicar-Configuracao.bat"
   },
   {
-    "source": "src/Modules/Core/Archive.psm1",
-    "target": "Modules/Core/Archive.psm1"
+    "source": "src/Diagnosticar.bat",
+    "target": "Diagnosticar.bat"
   },
   {
-    "source": "src/Modules/Core/Artifacts.psm1",
-    "target": "Modules/Core/Artifacts.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Capacity.psm1",
-    "target": "Modules/Core/Capacity.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Configuration.psm1",
-    "target": "Modules/Core/Configuration.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Encryption.psm1",
-    "target": "Modules/Core/Encryption.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Monitoring.psm1",
-    "target": "Modules/Core/Monitoring.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Observation.psm1",
-    "target": "Modules/Core/Observation.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Process.psm1",
-    "target": "Modules/Core/Process.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Runner.psm1",
-    "target": "Modules/Core/Runner.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Runtime.psm1",
-    "target": "Modules/Core/Runtime.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Schedule.psm1",
-    "target": "Modules/Core/Schedule.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Setup.psm1",
-    "target": "Modules/Core/Setup.psm1"
-  },
-  {
-    "source": "src/Modules/Core/Storage.psm1",
-    "target": "Modules/Core/Storage.psm1"
-  },
-  {
-    "source": "src/Modules/Providers/Directory/Directory.psm1",
-    "target": "Modules/Providers/Directory/Directory.psm1"
-  },
-  {
-    "source": "src/Modules/Providers/MySQL/Client.psm1",
-    "target": "Modules/Providers/MySQL/Client.psm1"
-  },
-  {
-    "source": "src/Modules/Providers/MySQL/MySQL.psm1",
-    "target": "Modules/Providers/MySQL/MySQL.psm1"
-  },
-  {
-    "source": "src/Modules/Providers/Providers.psm1",
-    "target": "Modules/Providers/Providers.psm1"
-  },
-  {
-    "source": "src/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1",
-    "target": "Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
-  },
-  {
-    "source": "src/Templates/MySQL/config.example.psd1",
-    "target": "Templates/MySQL/config.example.psd1"
-  },
-  {
-    "source": "src/Templates/SQLAnywhere/config.example.psd1",
-    "target": "Templates/SQLAnywhere/config.example.psd1"
+    "source": "src/Executar-Backup.bat",
+    "target": "Executar-Backup.bat"
   },
   {
     "source": "VERSION",
-    "target": "VERSION"
+    "target": "App/VERSION"
   },
   {
-    "source": "RUNBOOK.md",
-    "target": "RUNBOOK.md"
+    "source": "src/App/Backup.ps1",
+    "target": "App/Backup.ps1"
   },
   {
-    "source": "README.md",
-    "target": "README.md"
+    "source": "src/App/Diagnose.ps1",
+    "target": "App/Diagnose.ps1"
   },
   {
-    "source": "ARCHITECTURE.md",
-    "target": "ARCHITECTURE.md"
+    "source": "src/App/Setup.ps1",
+    "target": "App/Setup.ps1"
   },
   {
-    "source": "contracts/v1.md",
-    "target": "contracts/v1.md"
+    "source": "src/App/Modules/Core/Archive.psm1",
+    "target": "App/Modules/Core/Archive.psm1"
   },
   {
-    "source": "contracts/distribution.md",
-    "target": "contracts/distribution.md"
+    "source": "src/App/Modules/Core/Artifacts.psm1",
+    "target": "App/Modules/Core/Artifacts.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Capacity.psm1",
+    "target": "App/Modules/Core/Capacity.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Configuration.psm1",
+    "target": "App/Modules/Core/Configuration.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Encryption.psm1",
+    "target": "App/Modules/Core/Encryption.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Monitoring.psm1",
+    "target": "App/Modules/Core/Monitoring.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Observation.psm1",
+    "target": "App/Modules/Core/Observation.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Process.psm1",
+    "target": "App/Modules/Core/Process.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Runner.psm1",
+    "target": "App/Modules/Core/Runner.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Runtime.psm1",
+    "target": "App/Modules/Core/Runtime.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Schedule.psm1",
+    "target": "App/Modules/Core/Schedule.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Setup.psm1",
+    "target": "App/Modules/Core/Setup.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/Storage.psm1",
+    "target": "App/Modules/Core/Storage.psm1"
+  },
+  {
+    "source": "src/App/Modules/Providers/Providers.psm1",
+    "target": "App/Modules/Providers/Providers.psm1"
+  },
+  {
+    "source": "src/App/Modules/Providers/Directory/Directory.psm1",
+    "target": "App/Modules/Providers/Directory/Directory.psm1"
+  },
+  {
+    "source": "src/App/Modules/Providers/MySQL/Client.psm1",
+    "target": "App/Modules/Providers/MySQL/Client.psm1"
+  },
+  {
+    "source": "src/App/Modules/Providers/MySQL/MySQL.psm1",
+    "target": "App/Modules/Providers/MySQL/MySQL.psm1"
+  },
+  {
+    "source": "src/App/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1",
+    "target": "App/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
+  },
+  {
+    "source": "src/App/Templates/config.example.psd1",
+    "target": "App/Templates/config.example.psd1"
   }
 ]

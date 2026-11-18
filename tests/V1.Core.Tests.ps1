@@ -1,13 +1,14 @@
 BeforeAll {
     $script:Repo = Split-Path -Parent $PSScriptRoot
-    Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
+    . (Join-Path $PSScriptRoot 'V1.TestSupport.ps1')
+    Import-Module "$script:Repo/src/App/Modules/Core/Configuration.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Runtime.psm1"
 }
 Describe 'DBBackup v1 instance configuration' {
     BeforeEach {
         $script:Config = Join-Path $TestDrive 'instance/config.psd1'
         $null = New-Item -ItemType Directory -Path (Split-Path $script:Config) -Force
-        Copy-Item "$script:Repo/src/Templates/MySQL/config.example.psd1" $script:Config
+        Set-Content $script:Config (Get-DBTestConfigText)
     }
     It 'resolves paths relative to the configuration' {
         $c = Read-DBConfiguration $script:Config
@@ -16,14 +17,13 @@ Describe 'DBBackup v1 instance configuration' {
     }
     It 'rejects incompatible configuration and overlapping state' {
         $text = Get-Content $script:Config -Raw
-        Set-Content $script:Config ($text.Replace('SchemaVersion = 1', 'SchemaVersion = 0'))
+        Set-Content $script:Config ($text.Replace('SchemaVersion = 2', 'SchemaVersion = 0'))
         { Read-DBConfiguration $script:Config } | Should -Throw '*SchemaVersion*'
         Set-Content $script:Config ($text.Replace("CompletedRoot = 'Completed'", "CompletedRoot = 'Runtime/Completed'"))
         { Read-DBConfiguration $script:Config } | Should -Throw '*overlap*'
     }
     It 'rejects directory sources that include the instance' {
-        $text = (Get-Content $script:Config -Raw).Replace('Directories = @()', "Directories = @(@{Id='files'; SourcePath='..'})")
-        Set-Content $script:Config $text
+        Add-DBTestJob $script:Config "@{Id='files'; Provider='Directory'; SourcePath='..'; RemoteRoot='s3:bucket'}"
         { Read-DBConfiguration $script:Config } | Should -Throw '*overlap*'
     }
     It 'rejects cross-volume Completed to preserve atomic bundle transitions' {
@@ -75,12 +75,12 @@ Describe 'DBBackup v1 instance configuration' {
     It 'removes only generated stale Work and Staging entries' {
         $runtime = Join-Path $TestDrive 'stale-runtime'
         $current = 'c' * 32
-        foreach ($dir in @("Work/$current/db", "Work/$('d' * 32)/db", 'Work/manual', 'Staging/DBBackup_x_FULL', 'Staging/other', 'Pending/database/DBBackup_y')) {
+        foreach ($dir in @("Work/$current/db", "Work/$('d' * 32)/db", 'Work/manual', 'Staging/DBBackup_x_FULL', 'Staging/2026-01-01_00-00-00_MySQL_database', 'Staging/other', 'Pending/database/DBBackup_y')) {
             $null = New-Item -ItemType Directory (Join-Path $runtime $dir) -Force
         }
         $r = [pscustomobject]@{ RunId = $current; Work = (Join-Path $runtime "Work/$current"); Staging = (Join-Path $runtime 'Staging'); Pending = (Join-Path $runtime 'Pending') }
         $result = Clear-DBStaleRuntime $r
-        @($result.Removed).Count | Should -Be 2
+        @($result.Removed).Count | Should -Be 3
         @($result.Skipped).Count | Should -Be 2
         Test-Path (Join-Path $runtime "Work/$current/db") | Should -BeTrue
         Test-Path (Join-Path $runtime "Work/$('d' * 32)") | Should -BeFalse
@@ -128,5 +128,45 @@ Describe 'DBBackup v1 instance configuration' {
         { Assert-DBInstanceIsolation (Read-DBConfiguration $script:Config) $TestDrive } | Should -Throw '*remote destination*'
         Set-Content $script:Config $text.Replace('s3:bucket/ASSESSORIA', 's3:bucket/MULTI-COPIAS')
         { Assert-DBInstanceIsolation (Read-DBConfiguration $script:Config) $TestDrive } | Should -Not -Throw
+    }
+    It 'validates jobs: providers, unique IDs, per-job fields and destinations' {
+        $c = Read-DBConfiguration $script:Config
+        $c.Jobs[0].Destination | Should -BeExactly 's3:REPLACE_BUCKET/database'
+        $c.Jobs[0].CredentialFile | Should -Be (Join-Path (Split-Path $script:Config) 'Secrets/mysql.cnf')
+        $base = Get-Content $script:Config -Raw
+        $source = (Join-Path $TestDrive 'source').Replace("'", "''")
+        Add-DBTestJob $script:Config "@{Id='DATABASE'; Provider='Directory'; SourcePath='$source'; RemoteRoot='s3:other'}"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*Duplicate*'
+        Set-Content $script:Config $base
+        Add-DBTestJob $script:Config "@{Id='logs'; Provider='Directory'; SourcePath='$source'; RemoteRoot='s3:other'}"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*reserved*'
+        Set-Content $script:Config $base
+        Add-DBTestJob $script:Config "@{Id='sap'; Provider='Oracle'; RemoteRoot='s3:other'}"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*Provider must be*'
+        Set-Content $script:Config $base
+        Add-DBTestJob $script:Config "@{Id='docs'; Provider='Directory'; SourcePath='$source'; Database='x'; RemoteRoot='s3:other'}"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*not valid for Directory*'
+        Set-Content $script:Config $base
+        Add-DBTestJob $script:Config "@{Id='dominio'; Provider='SQLAnywhere'; Database='contabil'; CredentialFile='Secrets/dominio.options'; RemoteRoot='s3:other'}"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*Missing tool: DbBackup*'
+        Set-Content $script:Config ($base.Replace("SevenZip =", "DbBackup = 'C:\db\dbbackup.exe'`n        SevenZip ="))
+        Add-DBTestJob $script:Config "@{Id='dominio'; Provider='SQLAnywhere'; Database='contabil'; CredentialFile='Secrets/dominio.options'; RemoteRoot='s3:REPLACE_BUCKET/database'}"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*share a remote destination*'
+        Set-Content $script:Config $base
+        Add-DBTestJob $script:Config "@{Id='dominio'; Provider='SQLAnywhere'; Database='contabil'; CredentialFile='../elsewhere.options'; RemoteRoot='s3:other'}"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*Secrets directory*'
+    }
+    It 'defaults Completed and Logs to the installation root, one folder per instance' {
+        $text = (Get-Content $script:Config -Raw) -replace "(?m)^\s*Paths = .*\r?\n", ''
+        Set-Content $script:Config $text
+        $c = Read-DBConfiguration $script:Config
+        $root = Split-Path (Split-Path (Split-Path $script:Config))
+        $c.Paths.CompletedRoot | Should -Be (Join-Path $root 'Completed/MySQL')
+        $c.Paths.LogRoot | Should -Be (Join-Path $root 'Logs/MySQL')
+        $c.Paths.RuntimeRoot | Should -Be (Join-Path (Split-Path $script:Config) 'Runtime')
+    }
+    It 'rejects a 1.x configuration with a setup hint' {
+        Set-Content $script:Config "@{ SchemaVersion = 1; InstanceName = 'old' }"
+        { Read-DBConfiguration $script:Config } | Should -Throw '*run Setup*'
     }
 }

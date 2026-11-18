@@ -20,7 +20,7 @@ function Get-DBProviderSizeEstimate {
     <# Cheap provider-side size probe in bytes, or $null when the provider has none. #>
     param([Collections.IDictionary] $Configuration, $Job)
     switch ($Job.Provider) {
-        MySQL { return Get-DBMySqlSizeEstimate -Configuration $Configuration }
+        MySQL { return Get-DBMySqlSizeEstimate -Configuration $Configuration -Job $Job }
         default { return $null }
     }
 }

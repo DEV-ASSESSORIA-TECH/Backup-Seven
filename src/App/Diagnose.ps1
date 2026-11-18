@@ -1,6 +1,6 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([Parameter(Mandatory)][string] $ConfigPath, [string] $InstancesRoot = (Join-Path $PSScriptRoot 'Instances'))
+param([Parameter(Mandatory)][string] $ConfigPath, [string] $InstancesRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Instances'))
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Setup.psm1') -Force

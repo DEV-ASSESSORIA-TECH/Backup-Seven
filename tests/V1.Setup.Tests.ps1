@@ -1,10 +1,11 @@
 BeforeAll {
     $script:Repo=Split-Path -Parent $PSScriptRoot
-    Import-Module "$script:Repo/src/Modules/Core/Configuration.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Runtime.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Schedule.psm1"
-    Import-Module "$script:Repo/src/Modules/Core/Setup.psm1"
-    Import-Module "$script:Repo/src/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Configuration.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Runtime.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Schedule.psm1"
+    Import-Module "$script:Repo/src/App/Modules/Core/Setup.psm1"
+    . (Join-Path $PSScriptRoot 'V1.TestSupport.ps1')
+    Import-Module "$script:Repo/src/App/Modules/Providers/SQLAnywhere/SQLAnywhere.psm1"
     function New-TestDefinition($C) {
         $task=@(Get-DBScheduleTask $C)[0]
         Get-DBTaskDefinition -Task $task -PwshPath 'C:\Program Files\PowerShell\7\pwsh.exe' -ScriptPath 'C:\DBBackup\Backup.ps1' -WorkingDirectory 'C:\DBBackup' -ConfigPath $C.ConfigPath
@@ -15,7 +16,7 @@ BeforeAll {
 }
 Describe 'DBBackup task identity and reconciliation' {
     BeforeEach {
-        $script:C=@{InstanceName='MySQL';ConfigPath='C:\DBBackup\Instances\MySQL\config.psd1';Jobs=@([pscustomobject]@{Id='database'},[pscustomobject]@{Id='files'});Schedule=@{Tasks=@(@{Name='daily';Job='database';At='19:00'})}}
+        $script:C=@{InstanceName='MySQL';ConfigPath='C:\DBBackup\Instances\MySQL\config.psd1';Jobs=@([pscustomobject]@{Id='database'},[pscustomobject]@{Id='files'});Schedule=@{Tasks=@(@{Name='daily';Jobs=@('database');At='19:00'})}}
     }
     It 'uses explicit config/job, SYSTEM, protected tasks and a generic folder' {
         $definition=New-TestDefinition $script:C
@@ -45,7 +46,7 @@ Describe 'DBBackup task identity and reconciliation' {
         { Get-TestPlan $script:C @([pscustomobject]@{Name='mysql-DAILY';Xml=$d.Xml}) } | Should -Throw '*name conflict*'
     }
     It 'ignores tasks of other instances in the shared folder' {
-        $other=@{InstanceName='SQLAnywhere';ConfigPath='C:\DBBackup\Instances\SQLAnywhere\config.psd1';Jobs=@([pscustomobject]@{Id='database'});Schedule=@{Tasks=@(@{Name='daily';Job='database';At='02:00'})}}
+        $other=@{InstanceName='SQLAnywhere';ConfigPath='C:\DBBackup\Instances\SQLAnywhere\config.psd1';Jobs=@([pscustomobject]@{Id='database'});Schedule=@{Tasks=@(@{Name='daily';Jobs=@('database');At='02:00'})}}
         $foreign=[pscustomobject]@{Name='SQLAnywhere-daily';Xml=(New-TestDefinition $other).Xml}
         $plan=@(Get-TestPlan $script:C @($foreign))
         $plan.Count | Should -Be 1
@@ -67,12 +68,18 @@ Describe 'DBBackup task identity and reconciliation' {
         $script:C.Remove('Schedule')
         @(Get-TestPlan $script:C $existing).Count | Should -Be 0
     }
+    It 'runs every job of a task in one execution' {
+        $script:C.Schedule.Tasks=@(@{Name='daily';Jobs=@('database','files');At='19:00'})
+        (New-TestDefinition $script:C).Arguments | Should -Match '-Job database,files$'
+        $script:C.Schedule.Tasks=@(@{Name='daily';Jobs=@('database','database');At='19:00'})
+        { Get-DBScheduleTask $script:C } | Should -Throw '*repeats a job*'
+    }
     It 'validates weekly and monthly calendars with arbitrary job IDs' {
-        $script:C.Schedule.Tasks=@(@{Name='weekly';Job='files';At='03:00';Frequency='Weekly';Days=@('Saturday')},@{Name='monthly';Job='database';At='04:00';Frequency='Monthly';DaysOfMonth=@(1,'Last')})
+        $script:C.Schedule.Tasks=@(@{Name='weekly';Jobs=@('files');At='03:00';Frequency='Weekly';Days=@('Saturday')},@{Name='monthly';Jobs=@('database','files');At='04:00';Frequency='Monthly';DaysOfMonth=@(1,'Last')})
         $tasks=@(Get-DBScheduleTask $script:C)
         $tasks.Count | Should -Be 2
         Get-DBScheduleNextRun -Tasks $tasks -Job files -After ([datetime]'2026-11-17T00:00:00') | Should -Be ([datetime]'2026-11-21T03:00:00')
-        $script:C.Schedule.Tasks[0].Job='unknown'
+        $script:C.Schedule.Tasks[0].Jobs=@('unknown')
         { Get-DBScheduleTask $script:C } | Should -Throw '*Unknown*'
     }
     It 'recognizes wrapped missing-folder COM errors without swallowing access denied' {
@@ -116,7 +123,7 @@ Describe 'Task Scheduler COM paths' {
         $script:Requested | Should -Be @('\DBBackup')
     }
     It 'creates the folders and registers tasks using valid COM paths' {
-        $c=@{InstanceName='ASSESSORIA';ConfigPath='C:\DBBackup\Instances\ASSESSORIA\config.psd1';Jobs=@([pscustomobject]@{Id='database'});Schedule=@{Tasks=@(@{Name='daily';Job='database';At='19:00'})}}
+        $c=@{InstanceName='ASSESSORIA';ConfigPath='C:\DBBackup\Instances\ASSESSORIA\config.psd1';Jobs=@([pscustomobject]@{Id='database'});Schedule=@{Tasks=@(@{Name='daily';Jobs=@('database');At='19:00'})}}
         $plan=@(Get-TestPlan $c)
         Invoke-DBSchedulePlan -Configuration $c -Plan $plan
         $script:Requested | Where-Object { $_.Length -gt 1 -and $_.EndsWith('\') } | Should -BeNullOrEmpty
@@ -130,123 +137,10 @@ Describe 'Task Scheduler COM paths' {
         $script:Requested.Count | Should -Be 0
     }
 }
-Describe 'Unified setup and secrets' {
+Describe 'Guided setup 2.0' {
     BeforeEach {
         $script:Instances=Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
-        $script:Config=Join-Path $script:Instances 'MySQL/config.psd1'
-        Mock Set-Acl {} -ModuleName Runtime
-        Mock Set-Acl {} -ModuleName Setup
-    }
-    It 'creates an isolated config and refuses to overwrite it' {
-        $path=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        (Read-DBConfiguration $path).Provider | Should -Be MySQL
-        { Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances } | Should -Throw '*overwrite*'
-    }
-    It 'refuses duplicate instance names before persisting another config' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $other=Join-Path $script:Instances 'Other/config.psd1'
-        { Initialize-DBInstance -ConfigPath $other -Provider SQLAnywhere -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances } | Should -Throw '*Duplicate*'
-        Test-Path $other | Should -BeFalse
-    }
-    It 'rejects an enclosing instance before altering its existing child permissions' {
-        $child=Join-Path $script:Instances 'parent/child/config.psd1'
-        $null=Initialize-DBInstance -ConfigPath $child -Provider MySQL -InstanceName Child -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $parent=Join-Path $script:Instances 'parent/config.psd1'
-        { Initialize-DBInstance -ConfigPath $parent -Provider MySQL -InstanceName Parent -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances } | Should -Throw '*share*'
-        Test-Path $parent | Should -BeFalse
-    }
-    It 'never prompts for or overwrites existing secrets' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $c=Read-DBConfiguration $script:Config
-        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Storage.ConfigPath,$c.Encryption.RecipientsFile)) {Set-Content $file 'preserve exactly'}
-        Mock Read-Host { throw 'Unexpected prompt' } -ModuleName Setup
-        Initialize-DBSecret $c
-        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Storage.ConfigPath,$c.Encryption.RecipientsFile)) { Get-Content $file -Raw | Should -Match '^preserve exactly\s*$' }
-        Should -Invoke Read-Host -ModuleName Setup -Times 0 -Exactly
-    }
-    It 'plans without creating state directories, modifying config or applying tasks' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $before=(Get-FileHash $script:Config).Hash
-        Mock Get-DBSchedulerSnapshot { @() } -ModuleName Setup
-        Mock Invoke-DBSchedulePlan { throw 'Unexpected task mutation' } -ModuleName Setup
-        $plan=@(Invoke-DBConfigurationApply -Configuration (Read-DBConfiguration $script:Config) -InstancesRoot $script:Instances -ScriptPath 'C:\DBBackup\Backup.ps1' -PwshPath 'C:\pwsh.exe' -PlanOnly)
-        $plan.Action | Should -Be Create
-        (Get-FileHash $script:Config).Hash | Should -Be $before
-        Test-Path (Join-Path (Split-Path $script:Config) 'Runtime') | Should -BeFalse
-        Should -Invoke Invoke-DBSchedulePlan -ModuleName Setup -Times 0 -Exactly
-    }
-    It 'serializes literal values without interpreting embedded PowerShell' {
-        $path=Join-Path $TestDrive 'roundtrip.psd1'
-        $value=@{Name="O'Brien";Literal='$(should-never-run)';Enabled=$true;Items=@(1,'Last')}
-        Set-Content $path (ConvertTo-DBDataLiteral $value)
-        $copy=Import-PowerShellDataFile $path
-        $copy.Name | Should -Be "O'Brien"
-        $copy.Literal | Should -Be '$(should-never-run)'
-        $copy.Items | Should -Be @(1,'Last')
-    }
-    It 'performs local diagnostics without changing instance files or scheduler state' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider SQLAnywhere -InstanceName SQLAnywhere -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $c=Read-DBConfiguration $script:Config
-        # Replace placeholders before invoking diagnostics; never use real credentials.
-        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('REPLACE_DATABASE','demo').Replace('REPLACE_BUCKET','demo'))
-        $c=Read-DBConfiguration $script:Config
-        Set-Content $c.Database.ConnectionOptionsFile '-c "UID=u;PWD=p;HOST=192.0.2.1:2638;DBN=demo"'
-        Set-Content $c.Storage.ConfigPath '[s3]'
-        Set-Content $c.Encryption.RecipientsFile ('age1'+('q'*58))
-        $before=@(Get-ChildItem (Split-Path $script:Config) -Recurse -File | Get-FileHash | ForEach-Object Hash)
-        Mock Test-DBPrivateAcl {} -ModuleName Setup
-        Mock Assert-DBBackupDependency {} -ModuleName Setup
-        Mock Get-DBSchedulerSnapshot { throw 'Diagnostics must not inspect scheduler.' } -ModuleName Setup
-        (Test-DBInstance $c $script:Instances).Status | Should -Be LOCAL_CHECKS_OK
-        $after=@(Get-ChildItem (Split-Path $script:Config) -Recurse -File | Get-FileHash | ForEach-Object Hash)
-        $after | Should -Be $before
-        Should -Invoke Get-DBSchedulerSnapshot -ModuleName Setup -Times 0 -Exactly
-    }
-    It 'validates age recipients before writing and re-prompts on invalid input' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $c=Read-DBConfiguration $script:Config
-        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Storage.ConfigPath)) {Set-Content $file 'preserve exactly'}
-        $script:Answers=[Collections.Generic.Queue[string]]::new([string[]]@('AGE-SECRET-KEY-1PRIVATE', ('age1'+('q'*58))))
-        Mock Read-Host { $script:Answers.Dequeue() } -ModuleName Setup
-        Mock Write-Warning {} -ModuleName Setup
-        Initialize-DBSecret $c
-        (Get-Content $c.Encryption.RecipientsFile -Raw).Trim() | Should -Be ('age1'+('q'*58))
-        Should -Invoke Write-Warning -ModuleName Setup -Times 1 -Exactly
-    }
-    It 'gives up after three invalid recipient answers without creating the file' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $c=Read-DBConfiguration $script:Config
-        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Storage.ConfigPath)) {Set-Content $file 'preserve exactly'}
-        Mock Read-Host { '' } -ModuleName Setup
-        Mock Write-Warning {} -ModuleName Setup
-        { Initialize-DBSecret $c } | Should -Throw '*recipient*'
-        Test-Path $c.Encryption.RecipientsFile | Should -BeFalse
-    }
-    It 'writes the chosen S3 provider and optional endpoint to rclone' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName MySQL -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $c=Read-DBConfiguration $script:Config
-        foreach ($file in @($c.Database.DefaultsExtraFile,$c.Encryption.RecipientsFile)) {Set-Content $file 'preserve exactly'}
-        Mock Read-Host {
-            param($Prompt, [switch] $AsSecureString)
-            if ($AsSecureString) { $secure=[Security.SecureString]::new(); foreach ($ch in 'secret-value'.ToCharArray()) { $secure.AppendChar($ch) }; return $secure }
-            switch -Wildcard ($Prompt) {
-                'Provedor*' { 'Wasabi' }
-                'Endpoint*' { 's3.wasabisys.com' }
-                'Access*' { 'AKIDTEST' }
-                default { '' }
-            }
-        } -ModuleName Setup
-        Initialize-DBSecret $c
-        $text=Get-Content $c.Storage.ConfigPath -Raw
-        $text | Should -Match '(?m)^provider = Wasabi$'
-        $text | Should -Match '(?m)^endpoint = s3\.wasabisys\.com$'
-        $text | Should -Match '(?m)^secret_access_key = secret-value$'
-    }
-}
-Describe 'Guided setup' {
-    BeforeEach {
-        $script:Instances=Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
-        $script:Config=Join-Path $script:Instances 'estoque/config.psd1'
+        $script:Templates="$script:Repo/src/App/Templates"
         Mock Set-Acl {} -ModuleName Runtime
         Mock Set-Acl {} -ModuleName Setup
         Mock Out-Host {} -ModuleName Setup
@@ -254,108 +148,219 @@ Describe 'Guided setup' {
         $script:Tools=Join-Path $TestDrive 'tools'
         $null=New-Item -ItemType Directory $script:Tools -Force
         foreach ($name in 'mysql.exe','mysqldump.exe','7z.exe','age.exe','rclone.exe','dbbackup.exe') { Set-Content (Join-Path $script:Tools $name) 'x' }
+        $script:Docs=Join-Path $TestDrive 'docs'
+        $null=New-Item -ItemType Directory $script:Docs -Force
+        $script:Age='age1'+('q'*58)
         $script:Prompts=[Collections.Generic.List[string]]::new()
-        $script:Answers=@{}
+        $script:Answers=[ordered]@{}
         Mock Read-Host {
             param($Prompt, [switch] $AsSecureString)
             $script:Prompts.Add([string] $Prompt)
+            # A flow that keeps asking must fail the test, not hang it.
+            if ($script:Prompts.Count -gt 200) { throw "Too many prompts; last: $Prompt" }
             if ($AsSecureString) { $secure=[Security.SecureString]::new(); foreach ($ch in 'segredo'.ToCharArray()) { $secure.AppendChar($ch) }; return $secure }
-            foreach ($key in $script:Answers.Keys) { if ([string] $Prompt -like $key) { $value=$script:Answers[$key]; if ($value -is [Collections.Generic.Queue[string]]) { return $value.Dequeue() }; return $value } }
+            foreach ($key in $script:Answers.Keys) {
+                if ([string] $Prompt -like $key) {
+                    $value=$script:Answers[$key]
+                    if ($value -is [Collections.Generic.Queue[string]]) { if ($value.Count -eq 0) { throw "No more answers for $key" }; return $value.Dequeue() }
+                    return $value
+                }
+            }
             ''
         } -ModuleName Setup
-    }
-    It 'asks for bucket and prefix separately and never suggests placeholders' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName estoque -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $script:Answers=@{
-            'Executavel mysql.exe*'=(Join-Path $script:Tools 'mysql.exe'); 'Executavel mysqldump.exe*'=(Join-Path $script:Tools 'mysqldump.exe')
-            'Executavel 7z.exe*'=(Join-Path $script:Tools '7z.exe'); 'Executavel age.exe*'=(Join-Path $script:Tools 'age.exe'); 'Executavel rclone.exe*'=(Join-Path $script:Tools 'rclone.exe')
-            'Nome do banco MySQL*'=[Collections.Generic.Queue[string]]::new([string[]]@('', 'a_estoque'))
-            'Bucket S3*'=[Collections.Generic.Queue[string]]::new([string[]]@('Bucket_Invalido', 'assessoriatech-backups-seven-prod'))
-            'Prefixo*'='ASSESSORIA/'
-            'Horario*'='02:30'
+        function New-AnswerSet([Collections.Specialized.OrderedDictionary] $Extra) {
+            $base=[ordered]@{
+                'Executavel 7z.exe*'=(Join-Path $script:Tools '7z.exe'); 'Executavel age.exe*'=(Join-Path $script:Tools 'age.exe'); 'Executavel rclone.exe*'=(Join-Path $script:Tools 'rclone.exe')
+                'Executavel mysql.exe*'=(Join-Path $script:Tools 'mysql.exe'); 'Executavel mysqldump.exe*'=(Join-Path $script:Tools 'mysqldump.exe'); 'Executavel dbbackup.exe*'=(Join-Path $script:Tools 'dbbackup.exe')
+                'Provedor S3*'='AWS'; 'Access key ID*'='AKIDTEST'; 'Regiao*'=''; 'Destinatarios age*'=$script:Age
+            }
+            # Returned, not assigned here: a function's $script: scope is not the
+            # scope the Read-Host mock reads.
+            $merged=[ordered]@{}
+            foreach ($key in $Extra.Keys) { $merged[$key]=$Extra[$key] }
+            foreach ($key in $base.Keys) { if (-not $merged.Contains($key)) { $merged[$key]=$base[$key] } }
+            return $merged
         }
-        Set-DBInteractiveConfiguration $script:Config
-        $c=Read-DBConfiguration $script:Config
-        $c.Database.Name | Should -Be 'a_estoque'
-        $c.Storage.RemoteRoot | Should -BeExactly 's3:assessoriatech-backups-seven-prod/ASSESSORIA'
-        @(Get-DBScheduleTask $c)[0].At | Should -Be '02:30'
-        $script:Prompts | Where-Object { $_ -match 'REPLACE_' } | Should -BeNullOrEmpty
-        @($script:Prompts | Where-Object { $_ -like 'Nome do banco MySQL*' }).Count | Should -Be 2
+        # The comma keeps PowerShell from enumerating the queue on output.
+        function Q([string[]] $Items) { return ,([Collections.Generic.Queue[string]]::new($Items)) }
     }
-    It 're-asks for a missing executable instead of failing at the end' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName estoque -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        # Ordered: the specific pattern must win over the generic 'Executavel*'.
-        $script:Answers=[ordered]@{
-            'Executavel mysql.exe*'=[Collections.Generic.Queue[string]]::new([string[]]@((Join-Path $script:Tools 'missing.exe'), (Join-Path $script:Tools 'mysql.exe')))
-            'Executavel*'=(Join-Path $script:Tools '7z.exe'); 'Nome do banco*'='db'; 'Bucket S3*'='bucket-x'; 'Prefixo*'='/'; 'Horario*'=''
-        }
-        Set-DBInteractiveConfiguration $script:Config
-        (Read-DBConfiguration $script:Config).Tools.MySql | Should -Be (Join-Path $script:Tools 'mysql.exe')
-        (Read-DBConfiguration $script:Config).Storage.RemoteRoot | Should -BeExactly 's3:bucket-x'
+    It 'creates an instance with a MySQL job and a directory job grouped in one daily task' {
+        $script:Answers=New-AnswerSet ([ordered]@{
+            'Adicionar job*'=(Q @('1','3',''))
+            'Nome do banco MySQL*'='a_estoque'
+            'Identificador do job*'=(Q @('seven',''))
+            'Host do servidor MySQL*'=''; 'Porta MySQL*'=''; 'Usuario de backup*'='backup_seven'
+            'Bucket S3*'=(Q @('Bucket_Invalido','assessoriatech-backups-seven-prod',''))
+            'Prefixo*'=''
+            'Pasta a copiar*'=$script:Docs
+            'Horario diario*'=(Q @('19:00','19:00'))
+        })
+        $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
+        $c=Read-DBConfiguration $path
+        @($c.Jobs.Id) | Should -Be @('seven','docs')
+        $c.Jobs[0].Provider | Should -Be 'MySQL'
+        $c.Jobs[0].Database | Should -Be 'a_estoque'
+        $c.Jobs[0].Destination | Should -BeExactly 's3:assessoriatech-backups-seven-prod/ASSESSORIA/seven'
+        $c.Jobs[1].Provider | Should -Be 'Directory'
+        $c.Jobs[1].Destination | Should -BeExactly 's3:assessoriatech-backups-seven-prod/ASSESSORIA/docs'
+        $tasks=@(Get-DBScheduleTask $c)
+        $tasks.Count | Should -Be 1
+        $tasks[0].RegisteredName | Should -Be 'assessoria-diario-1900'
+        @($tasks[0].Jobs) | Should -Be @('seven','docs')
+        Get-Content $c.Jobs[0].CredentialFile -Raw | Should -Match 'user="backup_seven"'
+        Get-Content $c.Storage.ConfigPath -Raw | Should -Match '(?m)^no_check_bucket = true$'
+        $c.Paths.CompletedRoot | Should -Be (Join-Path (Split-Path $script:Instances) 'Completed/assessoria')
+        $c.Paths.LogRoot | Should -Be (Join-Path (Split-Path $script:Instances) 'Logs/assessoria')
+        # The job menu lists every provider; no other MySQL prompt mentions SQL Anywhere.
+        $script:Prompts | Where-Object { $_ -notlike 'Adicionar job*' -and $_ -match 'REPLACE_|SQL Anywhere' } | Should -BeNullOrEmpty
+        @($script:Prompts | Where-Object { $_ -like 'Bucket S3*' }).Count | Should -Be 3
         Should -Invoke Write-Warning -ModuleName Setup -Times 1 -Exactly
     }
-    It 'asks MySQL host and port without SQL Anywhere hints and writes a least-privilege rclone config' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName estoque -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        $c=Read-DBConfiguration $script:Config
-        Set-Content $c.Encryption.RecipientsFile ('age1'+('q'*58))
-        $script:Answers=@{ 'Host do servidor MySQL*'='db01'; 'Porta MySQL*'='3307'; 'Usuario*'='backup_seven'; 'Provedor S3*'='AWS'; 'Access key ID*'='AKIDTEST'; 'Regiao*'='' }
-        Initialize-DBSecret $c
-        $script:Prompts | Where-Object { $_ -match 'SQL Anywhere|Endpoint' } | Should -BeNullOrEmpty
-        $cnf=Get-Content $c.Database.DefaultsExtraFile -Raw
-        $cnf | Should -Match 'host="db01"'
-        $cnf | Should -Match 'port=3307'
-        $rclone=Get-Content $c.Storage.ConfigPath -Raw
-        $rclone | Should -Match '(?m)^no_check_bucket = true$'
-        $rclone | Should -Match '(?m)^region = sa-east-1$'
-        $rclone | Should -Not -Match 'endpoint'
+    It 'reuses secrets found in the instance folder and keeps the 1.x config aside' {
+        $secrets=Join-Path $script:Instances 'assessoria/Secrets'
+        $null=New-Item -ItemType Directory $secrets -Force
+        Set-Content (Join-Path $secrets 'mysql.cnf') "[client]`nuser=old"
+        Set-Content (Join-Path $secrets 'rclone.conf') "[aws]`ntype = s3"
+        Set-Content (Join-Path $secrets 'recipients.txt') $script:Age
+        Set-Content (Join-Path $script:Instances 'assessoria/config.psd1') "@{ SchemaVersion = 1; InstanceName = 'ASSESSORIA' }"
+        $script:Answers=New-AnswerSet ([ordered]@{
+            'Adicionar job*'=(Q @('1','')); 'Adicionar backup de diretorio*'=''
+            'Nome do banco MySQL*'='a_estoque'; 'Identificador do job*'=''
+            'Bucket S3*'='bucket-x'; 'Prefixo*'='ASSESSORIA'; 'Horario diario*'='02:30'
+        })
+        $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
+        $c=Read-DBConfiguration $path
+        $c.Jobs[0].CredentialFile | Should -Be (Join-Path $secrets 'mysql.cnf')
+        $c.Jobs[0].Id | Should -Be 'a_estoque'
+        $c.Jobs[0].RemoteRoot | Should -BeExactly 'aws:bucket-x/ASSESSORIA'
+        Get-Content (Join-Path $secrets 'mysql.cnf') -Raw | Should -Match 'user=old'
+        Test-Path (Join-Path $script:Instances 'assessoria/config.v1.psd1') | Should -BeTrue
+        $script:Prompts | Where-Object { $_ -like 'Access key*' -or $_ -like 'Host do servidor*' -or $_ -like 'Destinatarios*' } | Should -BeNullOrEmpty
+        @($script:Prompts | Where-Object { $_ -like 'Encontrado Secrets*' }).Count | Should -Be 3
+        @(Get-DBScheduleTask $c)[0].At | Should -Be '02:30'
     }
-    It 'writes SERVER for a local SQL Anywhere server and HOST for a network one' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider SQLAnywhere -InstanceName estoque -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('REPLACE_DATABASE','demo'))
+    It 'replaces a secret the operator declines and keeps the previous one as .old' {
+        $secrets=Join-Path $script:Instances 'assessoria/Secrets'
+        $null=New-Item -ItemType Directory $secrets -Force
+        Set-Content (Join-Path $secrets 'rclone.conf') "[s3]`nold = 1"
+        $script:Answers=New-AnswerSet ([ordered]@{
+            'Encontrado Secrets\rclone.conf*'='n'
+            'Adicionar job*'=(Q @('3','')); 'Pasta a copiar*'=$script:Docs; 'Identificador do job*'=''
+            'Bucket S3*'='bucket-x'; 'Prefixo*'=''; 'Horario diario*'=''
+        })
+        $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
+        Get-Content (Join-Path $secrets 'rclone.conf.old') -Raw | Should -Match 'old = 1'
+        Get-Content (Join-Path $secrets 'rclone.conf') -Raw | Should -Match 'access_key_id = AKIDTEST'
+        (Read-DBConfiguration $path).Jobs[0].Provider | Should -Be 'Directory'
+    }
+    It 'asks about directory backup when only database jobs were added' {
+        $script:Answers=New-AnswerSet ([ordered]@{
+            'Adicionar job*'=(Q @('2','','')); 'Adicionar backup de diretorio*'='s'
+            'Nome do banco SQL Anywhere*'='contabil'; 'Identificador do job*'=(Q @('dominio','arquivos'))
+            'Servidor em rede*'=''; 'Nome do servidor local*'='srv_dominio'; 'Usuario de backup*'='dba'
+            'Pasta a copiar*'=$script:Docs
+            'Bucket S3*'=(Q @('bucket-dominio','bucket-arquivos')); 'Prefixo*'=''; 'Horario diario*'=(Q @('19:00','22:00'))
+        })
+        $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
+        $c=Read-DBConfiguration $path
+        @($c.Jobs.Id) | Should -Be @('dominio','arquivos')
+        (Read-DBSqlConnection $c.Jobs[0].CredentialFile).SERVER | Should -Be 'srv_dominio'
+        @(Get-DBScheduleTask $c).Count | Should -Be 2
+        @($script:Prompts | Where-Object { $_ -like 'Adicionar backup de diretorio*' }).Count | Should -Be 1
+    }
+    It 'reapplies an existing 2.0 instance without asking anything else' {
+        $instance=Join-Path $script:Instances 'assessoria'
+        $null=New-Item -ItemType Directory (Join-Path $instance 'Secrets') -Force
+        Set-Content (Join-Path $instance 'config.psd1') (Get-DBTestConfigText -RemoteRoot 's3:bucket-x/ASSESSORIA' -InstanceName 'assessoria')
+        $script:Answers=New-AnswerSet ([ordered]@{ 'A instancia assessoria ja existe*'='' })
+        $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
+        $path | Should -Be (Join-Path $instance 'config.psd1')
+        $script:Prompts.Count | Should -Be 1
+    }
+    It 'refuses a job destination already used by another instance' {
+        $other=Join-Path $script:Instances 'outra'
+        $null=New-Item -ItemType Directory $other -Force
+        Set-Content (Join-Path $other 'config.psd1') (Get-DBTestConfigText -RemoteRoot 's3:bucket-x/ASSESSORIA' -InstanceName 'outra')
+        $script:Answers=New-AnswerSet ([ordered]@{
+            'Adicionar job*'=(Q @('3','')); 'Pasta a copiar*'=$script:Docs; 'Identificador do job*'='database'
+            'Bucket S3*'='bucket-x'; 'Prefixo*'='ASSESSORIA'; 'Horario diario*'=''; 'Adicionar backup de diretorio*'=''
+        })
+        { Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria' } | Should -Throw '*remote destination*'
+        Test-Path (Join-Path $script:Instances 'assessoria/config.psd1') | Should -BeFalse
+    }
+    It 'serializes literal values without interpreting embedded PowerShell' {
+        $path=Join-Path $TestDrive 'roundtrip.psd1'
+        $value=@{Name="O'Brien";Literal='$(should-never-run)';Enabled=$true;Items=@(1,'Last');Jobs=@([ordered]@{Id='a';Provider='Directory'})}
+        Set-Content $path (ConvertTo-DBDataLiteral $value)
+        $copy=Import-PowerShellDataFile $path
+        $copy.Name | Should -Be "O'Brien"
+        $copy.Literal | Should -Be '$(should-never-run)'
+        $copy.Items | Should -Be @(1,'Last')
+        $copy.Jobs[0].Id | Should -Be 'a'
+    }
+}
+Describe 'Apply, diagnostics and summary' {
+    BeforeEach {
+        $script:Instances=Join-Path $TestDrive ([guid]::NewGuid().ToString('N').Substring(0, 8))
+        $script:Config=Join-Path $script:Instances 'assessoria/config.psd1'
+        $null=New-Item -ItemType Directory (Join-Path $script:Instances 'assessoria/Secrets') -Force
+        Set-Content $script:Config ((Get-DBTestConfigText -RemoteRoot 's3:bucket-x/ASSESSORIA' -InstanceName 'assessoria') -replace "(?m)^\s*Paths = .*\r?\n", '')
+        Set-Content (Join-Path $script:Instances 'assessoria/Secrets/mysql.cnf') "[client]`nuser=u"
+        Set-Content (Join-Path $script:Instances 'assessoria/Secrets/rclone.conf') '[s3]'
+        Set-Content (Join-Path $script:Instances 'assessoria/Secrets/recipients.txt') @(('age1'+('q'*58)), ('age1'+('p'*58)))
+        Mock Set-Acl {} -ModuleName Runtime
+        Mock Set-Acl {} -ModuleName Setup
+        Mock Out-Host {} -ModuleName Setup
+    }
+    It 'plans without creating state directories, modifying config or applying tasks' {
+        $before=(Get-FileHash $script:Config).Hash
+        Mock Get-DBSchedulerSnapshot { @() } -ModuleName Setup
+        Mock Invoke-DBSchedulePlan { throw 'Unexpected task mutation' } -ModuleName Setup
+        $plan=@(Invoke-DBConfigurationApply -Configuration (Read-DBConfiguration $script:Config) -InstancesRoot $script:Instances -ScriptPath 'C:\DBBackup\App\Backup.ps1' -PwshPath 'C:\pwsh.exe' -PlanOnly)
+        $plan.Action | Should -Be Create
+        $plan.Name | Should -Be 'assessoria-database-daily'
+        (Get-FileHash $script:Config).Hash | Should -Be $before
+        Test-Path (Join-Path (Split-Path $script:Instances) 'Completed') | Should -BeFalse
+        Should -Invoke Invoke-DBSchedulePlan -ModuleName Setup -Times 0 -Exactly
+    }
+    It 'performs local diagnostics without changing instance files or scheduler state' {
         $c=Read-DBConfiguration $script:Config
-        foreach ($file in @($c.Storage.ConfigPath,$c.Encryption.RecipientsFile)) { Set-Content $file 'preserve' }
-        $script:Answers=@{ 'Servidor em rede*'=''; 'Nome do servidor local*'='srv_demo'; 'Usuario*'='dba' }
-        Initialize-DBSecret $c
-        $connection=Read-DBSqlConnection $c.Database.ConnectionOptionsFile
-        $connection.SERVER | Should -Be 'srv_demo'
-        $connection.ContainsKey('HOST') | Should -BeFalse
-        Remove-Item $c.Database.ConnectionOptionsFile
-        $script:Answers=@{ 'Servidor em rede*'='10.0.0.5:2638'; 'Usuario*'='dba' }
-        Initialize-DBSecret $c
-        (Read-DBSqlConnection $c.Database.ConnectionOptionsFile).HOST | Should -Be '10.0.0.5:2638'
+        $before=@(Get-ChildItem (Split-Path $script:Config) -Recurse -File | Get-FileHash | ForEach-Object Hash)
+        Mock Test-DBPrivateAcl {} -ModuleName Setup
+        Mock Assert-DBBackupDependency {} -ModuleName Setup
+        Mock Get-DBSchedulerSnapshot { throw 'Diagnostics must not inspect scheduler.' } -ModuleName Setup
+        (Test-DBInstance $c $script:Instances).Status | Should -Be LOCAL_CHECKS_OK
+        @(Get-ChildItem (Split-Path $script:Config) -Recurse -File | Get-FileHash | ForEach-Object Hash) | Should -Be $before
+        Should -Invoke Test-DBPrivateAcl -ModuleName Setup -Times 3 -Exactly
     }
     It 'lists visible databases when the configured MySQL database is not reachable' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName estoque -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('REPLACE_DATABASE','estoque_errado'))
         Mock Invoke-DBTool {
             param($Arguments)
-            if (($Arguments -join ' ') -match 'SELECT 1') { return [pscustomobject]@{ExitCode=1;StdOut='';StdErr="ERROR 1049 (42000): Unknown database 'estoque_errado'"} }
+            if (($Arguments -join ' ') -match 'SELECT 1') { return [pscustomobject]@{ExitCode=1;StdOut='';StdErr="ERROR 1049 (42000): Unknown database 'testdb'"} }
             [pscustomobject]@{ExitCode=0;StdOut="information_schema`na_estoque`nmysql";StdErr=''}
         } -ModuleName Setup
-        $result=Test-DBDatabaseConnection -Configuration (Read-DBConfiguration $script:Config)
+        $c=Read-DBConfiguration $script:Config
+        $result=Test-DBDatabaseConnection -Configuration $c -Job $c.Jobs[0]
         $result.Ok | Should -BeFalse
         $result.Message | Should -Match 'Bancos visiveis: a_estoque$'
     }
     It 'stops before applying when a connection check fails and the operator declines' {
         Mock Test-DBDatabaseConnection { [pscustomobject]@{Ok=$true;Message='ok'} } -ModuleName Setup
         Mock Test-DBStorageAccess { [pscustomobject]@{Ok=$false;Message='AccessDenied'} } -ModuleName Setup
-        $c=@{Tools=@{Rclone='rclone.exe'};Storage=@{ConfigPath='rclone.conf';RemoteRoot='s3:b/p'}}
-        $script:Answers=@{ 'Testar agora*'='s'; 'Algum teste falhou*'='' }
+        $script:Replies=[ordered]@{ 'Testar agora*'='s'; 'Algum teste falhou*'='' }
+        Mock Read-Host { param($Prompt) foreach ($key in $script:Replies.Keys) { if ($Prompt -like $key) { return $script:Replies[$key] } }; '' } -ModuleName Setup
+        $c=Read-DBConfiguration $script:Config
         Invoke-DBConnectionCheck $c | Should -BeFalse
-        $script:Answers=@{ 'Testar agora*'='n' }
+        $script:Replies=[ordered]@{ 'Testar agora*'='n' }
         Invoke-DBConnectionCheck $c | Should -BeTrue
         Should -Invoke Test-DBStorageAccess -ModuleName Setup -Times 1 -Exactly
     }
-    It 'summarizes destination, tasks and the next step' {
-        $null=Initialize-DBInstance -ConfigPath $script:Config -Provider MySQL -InstanceName estoque -TemplateRoot "$script:Repo/src/Templates" -InstancesRoot $script:Instances
-        Set-Content $script:Config ((Get-Content $script:Config -Raw).Replace('REPLACE_DATABASE','a_estoque').Replace('s3:REPLACE_BUCKET','s3:bucket-x/ASSESSORIA'))
+    It 'summarizes jobs, destinations, tasks and the next step' {
         $c=Read-DBConfiguration $script:Config
-        Set-Content $c.Encryption.RecipientsFile @(('age1'+('q'*58)), ('age1'+('p'*58)))
-        $text=(Get-DBSetupSummary -Configuration $c -RegisteredTasks @('estoque-database-daily') -PwshPath 'C:\pwsh.exe' -ScriptPath 'C:\DBBackup\Backup.ps1') -join "`n"
-        $text | Should -Match 's3:bucket-x/ASSESSORIA/<trabalho>/aaaa/mm/dd/'
+        $text=(Get-DBSetupSummary -Configuration $c -RegisteredTasks @('assessoria-database-daily') -PwshPath 'C:\pwsh.exe' -ScriptPath 'C:\DBBackup\App\Backup.ps1') -join "`n"
+        $text | Should -Match 'Job database: MySQL, banco testdb -> s3:bucket-x/ASSESSORIA/database/aaaa/mm/dd/'
         $text | Should -Match 'Destinatarios age: 2'
-        $text | Should -Match '\\DBBackup\\estoque-database-daily - Daily 19:00 \(registrada\)'
-        $text | Should -Match '-Job database'
+        $text | Should -Match '\\DBBackup\\assessoria-database-daily - Daily 19:00, jobs database \(registrada\)'
+        $text | Should -Match '-All'
     }
 }
-

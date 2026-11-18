@@ -1,57 +1,55 @@
 # DBBackup
 
-Backup de bancos MySQL 5 e SQL Anywhere 17 em Windows, com scripts PowerShell
-compartilhados e instâncias operacionais isoladas. Diretórios adicionais podem
-ser protegidos como trabalhos independentes.
+Backup criptografado de bancos MySQL 5, SQL Anywhere 17 e pastas em Windows,
+enviado para S3 com rclone.
 
-O fluxo produz os arquivos, cria e testa um `.7z`, criptografa com age e envia
-`.7z.age` ao S3 pelo rclone, conferindo o objeto antes de concluir a publicação.
-Os pacotes pendentes são reenviados sem mudar seu conteúdo ou destino.
+Cada **instância** reúne credenciais S3, destinatários age, agenda e pastas
+operacionais, e executa uma lista de **jobs**. Cada job é uma fonte (um banco ou
+uma pasta) com destino próprio no S3. Uma instância pode ter, por exemplo, um
+MySQL, um SQL Anywhere e uma pasta, ou só pastas.
+
+Fluxo de cada job: produz os arquivos, cria e testa um `.7z`, criptografa com age
+e envia o `.7z.age` com rclone, conferindo tamanho e MD5 no destino. Pacotes
+pendentes são reenviados sem mudar conteúdo ou destino.
 
 - MySQL: dump lógico e fallback geral/granular explicitamente degradado.
 - SQL Anywhere: cópia nativa completa do banco e log, sem renomear/truncar o log.
-- Uma configuração, Secrets, Runtime, Completed, Logs e lock por instância.
-- Setup guiado e agendamento comum na pasta `\DBBackup\` (tarefas `<instância>-<tarefa>`).
-- Destino S3 completo por instância (`remote:bucket/prefixo`), independente do nome da instância.
+- Pastas: arquivadas no lugar, sem cópia intermediária.
+- Setup guiado com menu de jobs, reaproveitamento de credenciais e teste de conexão.
+- Agendamento na pasta `\DBBackup\` do Agendador (`<instância>-<tarefa>`).
+- Nomes legíveis: `2026-11-18_19-00-05_<instância>_<job>.7z.age`.
+- Cada log termina com `RESULTADO: ...` explicando o que aconteceu.
 - Métricas no contrato genérico de backups do Grafana Alloy.
-- Timeouts dos processos externos, encerramento da árvore e checks de espaço.
 
-**Recovery é um processo externo.** O DBBackup não inicia motores de bancos de
-restauração/validação, não importa dumps e não precisa de chave age privada.
-Sucesso de backup indica produção, verificações dos arquivos/pacote e publicação
-confirmada; não certifica restauração. Nenhuma recuperação real foi executada
-como parte desta entrega.
+**Recovery é um processo externo.** O DBBackup não restaura bancos e não precisa
+de chave age privada. Sucesso de backup indica produção, verificação do pacote e
+publicação confirmada; não certifica restauração.
 
 ## Instalação
 
-Requer Windows, PowerShell 7.2 ou superior, 7-Zip, age e rclone. MySQL precisa
-mysql/mysqldump compatíveis com a origem 5.x. SQL Anywhere precisa dbbackup 17 e
-suas dependências nativas. Executáveis externos não acompanham o ZIP.
+Requer Windows, PowerShell 7.2+ (instalador MSI), 7-Zip, age e rclone; para MySQL,
+`mysql.exe`/`mysqldump.exe`; para SQL Anywhere, `dbbackup.exe` 17.
 
-Extraia `DBBackup-1.1.0.zip` em uma pasta nova. Em PowerShell elevado:
+1. Confira o SHA-256 do `DBBackup-X.Y.Z.zip` com o `.zip.sha256`.
+2. Extraia numa pasta, por exemplo `C:\TI\Scripts\DBBackup`.
+3. Execute `Setup.bat` e siga as perguntas.
 
-```powershell
-.\Setup.ps1 -Provider MySQL -InstanceName MySQL
-.\Setup.ps1 -Provider SQLAnywhere -InstanceName SQLAnywhere
-```
-
-O setup cria instâncias a partir de modelos e solicita os valores locais. Nada
-é configurado na produção ao extrair o pacote. A linha 0.x é incompatível e sua
-migração é manual; não sobrescreva a instalação existente.
+O pacote contém apenas os lançadores `.bat`, o `LEIA-ME.txt` e a pasta `App`.
+As pastas `Instances`, `Completed` e `Logs` são criadas ao lado deles.
 
 ## Documentação e desenvolvimento
 
-- [Runbook](RUNBOOK.md): instalação, credenciais, tarefas, operação e migração.
-- [Arquitetura](ARCHITECTURE.md): fronteiras do núcleo e dos provedores.
-- [Contratos](contracts/v1.md): configuração, resultado, artefatos e métricas.
-- [Distribuição](contracts/distribution.md): conteúdo e regras de release.
+- [Runbook](RUNBOOK.md): instalação, setup, credenciais, IAM, operação e migração.
+- [Arquitetura](ARCHITECTURE.md): instâncias, jobs, núcleo e provedores.
+- [Contratos](contracts/v2.md): configuração, resultado, artefatos e métricas.
+- [Distribuição](contracts/distribution.md): conteúdo do pacote e release.
+- [Mudanças](CHANGELOG.md).
 
 ```powershell
 .\scripts\verify.ps1
 .\scripts\package.ps1
 ```
 
-A verificação usa Pester 5.7.1 e PSScriptAnalyzer 1.25.0. Os testes usam motores
-simulados e mocks de ACL/agendador; não acessam bancos ou buckets reais. Há teste
-real de encerramento de processos simulados e checks do pacote extraído. O
-workflow de release é manual; sua implementação não publica a versão por si só.
+A verificação usa Pester 5.7.1 e PSScriptAnalyzer 1.25.0. Os testes usam
+ferramentas simuladas e mocks de ACL/agendador; não acessam bancos ou buckets
+reais. O workflow de release é manual e só roda a partir da `main`.

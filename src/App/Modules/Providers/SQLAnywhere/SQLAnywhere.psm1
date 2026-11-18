@@ -57,8 +57,8 @@ function ConvertTo-DBSafeToolOutput {
 function Invoke-DBSqlAnywhere {
     param([Collections.IDictionary] $Configuration, $Job, $Runtime)
     $started = [DateTime]::UtcNow
-    $connection = Read-DBSqlConnection $Configuration.Database.ConnectionOptionsFile
-    if ($connection.DBN -cne $Configuration.Database.Name) { throw 'SQL DBN must match Database.Name.' }
+    $connection = Read-DBSqlConnection $Job.CredentialFile
+    if ($connection.DBN -cne $Job.Database) { throw "Job $($Job.Id): SQL DBN must match the job Database." }
     $secretRoot = Join-Path $Runtime.Work '_secrets'
     Set-DBPrivateDirectory $secretRoot
     $root = Join-Path $Runtime.Work $Job.Id
@@ -85,7 +85,7 @@ function Invoke-DBSqlAnywhere {
             Status = 'SUCCESS'; Packages = @([pscustomobject]@{ Role = 'FULL'; SourcePath = $root; ContentsOnly = $true })
             Errors = @(); StartedAtUtc = $started; FinishedAtUtc = [DateTime]::UtcNow
             Metadata = @{
-                Strategy = 'native-full-database-and-log'; Database = $Configuration.Database.Name
+                Strategy = 'native-full-database-and-log'; Database = $Job.Database
                 Validation = 'native-exit-code-and-nonempty-files'; RecoveryValidation = 'external-not-performed'
                 ProductionLogRename = $false; ProductionLogTruncate = $false
                 DatabaseFiles = @($dbs.Name); LogFiles = @($logs.Name)
