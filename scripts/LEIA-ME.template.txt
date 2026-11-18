@@ -17,14 +17,16 @@ Requisitos
   Windows com PowerShell 7.2+ (instalador MSI), 7-Zip, age e rclone.
   MySQL: mysql.exe e mysqldump.exe. SQL Anywhere: dbbackup.exe 17.
 
-Como usar (clique duas vezes; cada um pede elevacao)
+Como usar (clique duas vezes; cada um pede elevacao e lista as instancias)
   Setup.bat                 Cria uma instancia ou adiciona jobs a uma existente.
-  Aplicar-Configuracao.bat  Reaplica um config.psd1 editado (ACL, diagnostico, tarefas).
+  Editar-Configuracao.bat   Abre o config.psd1 como Administrador, valida e aplica.
+  Aplicar-Configuracao.bat  Reaplica um config.psd1 (ACL, diagnostico, tarefas).
   Diagnosticar.bat          Verificacoes locais, sem backup nem alteracoes.
-  Executar-Backup.bat       Executa agora todos os jobs de uma instancia.
+  Executar-Backup.bat       Backup agora (escolha os jobs); andamento na janela.
+  Atualizar.bat             Atualiza para a ultima versao publicada no GitHub.
 
 Pastas criadas ao lado deste arquivo
-  Instances\<instancia>\config.psd1   configuracao (pode ser editada)
+  Instances\<instancia>\config.psd1   configuracao (use Editar-Configuracao.bat)
   Instances\<instancia>\Secrets\      credenciais (somente SYSTEM e Administradores)
   Instances\<instancia>\Runtime\      trabalho temporario e pendencias (restrita)
   Completed\<instancia>\<job>\        pacotes criptografados mantidos localmente
@@ -34,5 +36,7 @@ Agendador de Tarefas: pasta \DBBackup\, tarefas <instancia>-<tarefa>.
 Codigos de saida: 0 sucesso, 1 falha, 2 configuracao, 3 ja em execucao,
 4 etapa auxiliar com falha, 5 backup degradado.
 
-Atualizacao: substitua a pasta App e os arquivos .bat. Nao apague Instances,
-Completed nem Logs.
+Atualizacao: rode Atualizar.bat. Ele confere o checksum, guarda a versao atual
+em Versoes-Anteriores e troca so App e os arquivos .bat; Instances, Completed e
+Logs nao sao alterados. Sem internet: arraste o DBBackup-X.Y.Z.zip (com o
+.sha256 ao lado) sobre o Atualizar.bat.

@@ -16,7 +16,11 @@ pendentes são reenviados sem mudar conteúdo ou destino.
 - SQL Anywhere: cópia nativa completa do banco e log, sem renomear/truncar o log.
 - Pastas: arquivadas no lugar, sem cópia intermediária.
 - Setup guiado com menu de jobs, reaproveitamento de credenciais e teste de conexão.
-- Agendamento na pasta `\DBBackup\` do Agendador (`<instância>-<tarefa>`).
+- Agendamento na pasta `\DBBackup\` do Agendador (`<instância>-<tarefa>`), com
+  um ou vários horários por tarefa.
+- `Editar-Configuracao.bat` edita, valida e aplica o `config.psd1` como Administrador.
+- `Atualizar.bat` atualiza para a última release do GitHub, preservando
+  configurações, credenciais, pacotes e logs.
 - Nomes legíveis: `2026-11-18_19-00-05_<instância>_<job>.7z.age`.
 - Cada log termina com `RESULTADO: ...` explicando o que aconteceu.
 - Métricas no contrato genérico de backups do Grafana Alloy.
@@ -35,7 +39,8 @@ Requer Windows, PowerShell 7.2+ (instalador MSI), 7-Zip, age e rclone; para MySQ
 3. Execute `Setup.bat` e siga as perguntas.
 
 O pacote contém apenas os lançadores `.bat`, o `LEIA-ME.txt` e a pasta `App`.
-As pastas `Instances`, `Completed` e `Logs` são criadas ao lado deles.
+As pastas `Instances`, `Completed` e `Logs` são criadas ao lado deles. Para
+atualizar, rode `Atualizar.bat` (veja o [runbook](RUNBOOK.md#atualização-e-migração)).
 
 ## Documentação e desenvolvimento
 

@@ -32,5 +32,6 @@
     Monitoring = @{ Enabled = $false; Service = 'erp'; TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup'; BackupIds = @{} }
     # Tarefas: Jobs de uma tarefa rodam em sequencia na mesma execucao.
     # @{ Name = 'diario-1900'; Jobs = @('seven','dominio'); At = '19:00'; Frequency = 'Daily' }
+    # Varios horarios na mesma tarefa: At = @('12:30', '19:00')
     Schedule = @{ Tasks = @() }
 }

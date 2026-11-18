@@ -256,4 +256,42 @@ function Assert-DBInstanceIsolation {
     }
 }
 
-Export-ModuleMember -Function Get-DBDefaultPath, Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, ConvertTo-DBRemoteRoot, Test-DBRemoteOverlap, Assert-DBInstanceIsolation
+function Get-DBInstanceConfigPath {
+    <# config.psd1 of every instance under InstancesRoot, sorted by instance name. #>
+    param([Parameter(Mandatory)][string] $InstancesRoot)
+    if (-not (Test-Path -LiteralPath $InstancesRoot -PathType Container)) { return @() }
+    return @(Get-ChildItem -LiteralPath $InstancesRoot -Directory -Force | Sort-Object Name |
+        ForEach-Object { Join-Path $_.FullName 'config.psd1' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+}
+
+function Select-DBConfigPath {
+    <#
+    Used by the .bat launchers instead of asking for a path: one instance is
+    chosen automatically, several are listed by number. A full path to a
+    config.psd1 is still accepted.
+    #>
+    param([Parameter(Mandatory)][string] $InstancesRoot)
+    $found = @(Get-DBInstanceConfigPath $InstancesRoot)
+    if ($found.Count -eq 1) {
+        "Instancia: $(Split-Path -Leaf (Split-Path -Parent $found[0])) ($($found[0]))" | Out-Host
+        return $found[0]
+    }
+    if ($found.Count) {
+        'Instancias encontradas:' | Out-Host
+        for ($i = 0; $i -lt $found.Count; $i++) { '  {0}) {1}  ({2})' -f ($i + 1), (Split-Path -Leaf (Split-Path -Parent $found[$i])), $found[$i] | Out-Host }
+        $prompt = 'Numero da instancia (ou caminho completo do config.psd1)'
+    }
+    else {
+        "Nenhuma instancia encontrada em $InstancesRoot." | Out-Host
+        $prompt = 'Caminho completo do config.psd1'
+    }
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $answer = ([string] (Read-Host $prompt)).Trim().Trim('"')
+        if ($answer -match '^\d+$' -and [int] $answer -ge 1 -and [int] $answer -le $found.Count) { return $found[[int] $answer - 1] }
+        if ($answer -and $answer -notmatch '^\d+$' -and (Test-Path -LiteralPath $answer -PathType Leaf)) { return [IO.Path]::GetFullPath($answer) }
+        Write-Warning 'Opcao invalida.'
+    }
+    throw 'Nenhuma configuracao selecionada.'
+}
+
+Export-ModuleMember -Function Get-DBInstanceConfigPath, Select-DBConfigPath, Get-DBDefaultPath, Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, ConvertTo-DBRemoteRoot, Test-DBRemoteOverlap, Assert-DBInstanceIsolation

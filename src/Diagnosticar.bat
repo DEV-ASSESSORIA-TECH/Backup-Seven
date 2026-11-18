@@ -16,15 +16,8 @@ if not defined PWSH (
     exit /b 1
 )
 title DBBackup
-set /p "DBBACKUP_CONFIG=Caminho completo do config.psd1: "
-if not defined DBBACKUP_CONFIG (
-    echo Nenhum caminho informado.
-    pause
-    exit /b 2
-)
-rem Aceita o caminho colado com aspas (Copiar como caminho).
-set "DBBACKUP_CONFIG=%DBBACKUP_CONFIG:"=%"
-"%PWSH%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0App\Diagnose.ps1" -ConfigPath "%DBBACKUP_CONFIG%"
+rem Lista as instancias; verificacoes locais da escolhida, sem backup nem alteracoes.
+"%PWSH%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0App\Diagnose.ps1"
 set "RESULT=%ERRORLEVEL%"
 pause
 exit /b %RESULT%

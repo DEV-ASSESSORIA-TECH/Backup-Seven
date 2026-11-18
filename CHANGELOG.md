@@ -4,6 +4,44 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [2.1.0] - 2026-11-18
+
+### Adicionado
+
+- `Atualizar.bat`: consulta a última release no GitHub, pergunta, baixa o ZIP e
+  o `.sha256`, confere o checksum e o conteúdo do pacote, recusa atualizar com
+  backup em execução, guarda a versão atual em `Versoes-Anteriores\` (três
+  mantidas), troca só `App\` e os arquivos da raiz, restaura sozinho se a troca
+  falhar e oferece reaplicar as instâncias. Sem internet, aceita um ZIP
+  arrastado sobre o `.bat`. `Instances`, `Completed` e `Logs` não são tocados.
+- `Editar-Configuracao.bat`: abre o `config.psd1` como Administrador, valida ao
+  fechar, oferece reabrir ou desfazer se ficar inválido e aplica.
+- Vários horários por tarefa: `At = @('12:30','19:00')` gera um disparo por
+  horário; o setup aceita `12:30,19:00` e agrupa jobs com os mesmos horários.
+- `Executar-Backup.bat` mostra o andamento na janela (`Step 1/4` a `4/4`) e
+  pergunta quais jobs executar.
+- Apply lista tarefas da 0.x/1.x (`\BackupSeven\`, `\DBBackup\<instância>\`)
+  com o script que executam e as remove com `SIM`.
+- Estimativa de espaço do SQL Anywhere na primeira execução via
+  `dbping -pd FileSize,PageSize`, quando disponível.
+
+### Alterado
+
+- Os `.bat` listam as instâncias (uma é escolhida direto; várias, por número)
+  em vez de pedir o caminho do `config.psd1`.
+- O Apply torna privado o `Runtime` da instância mesmo com permissões herdadas,
+  em vez de recusar.
+- Mensagens de agenda indicam a tarefa, os jobs configurados e diferença de
+  maiúsculas/minúsculas no nome do job.
+- Ferramentas externas rodam com stdin fechado: um pedido de senha ou
+  confirmação falha na hora em vez de esperar o timeout.
+
+### Corrigido
+
+- Documentação: o `config.psd1` herda a permissão da instalação e, na
+  instalação típica, só Administradores alteram (a tarefa SYSTEM executa os
+  caminhos de `Tools`). A 2.0.0 dizia que era editável sem elevação.
+
 ## [2.0.0] - 2026-11-18
 
 ### Alterado — incompatível com a 1.x

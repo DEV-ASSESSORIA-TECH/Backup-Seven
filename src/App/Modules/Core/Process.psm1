@@ -38,6 +38,10 @@ function Invoke-DBTool {
     $si.CreateNoWindow = $true
     $si.RedirectStandardOutput = $true
     $si.RedirectStandardError = $true
+    # Tools never read input: stdin is closed right after start, so a tool that
+    # would prompt (password, overwrite) gets end-of-file and fails instead of
+    # waiting until the timeout.
+    $si.RedirectStandardInput = $true
     foreach ($argument in $Arguments) { $si.ArgumentList.Add($argument) }
     $p = [Diagnostics.Process]::new()
     $p.StartInfo = $si
@@ -50,6 +54,7 @@ function Invoke-DBTool {
         }
         if (-not $p.Start()) { throw 'External tool did not start.' }
         $started = $true
+        $p.StandardInput.Close()
         $stdout = if ($null -ne $stream) { $p.StandardOutput.BaseStream.CopyToAsync($stream) } else { $p.StandardOutput.ReadToEndAsync() }
         $stderr = $p.StandardError.ReadToEndAsync()
         $watch = [Diagnostics.Stopwatch]::StartNew()
