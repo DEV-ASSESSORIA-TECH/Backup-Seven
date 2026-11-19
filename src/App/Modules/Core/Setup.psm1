@@ -588,6 +588,8 @@ function Read-DBMonitoring {
         if (-not [IO.Path]::IsPathFullyQualified($value)) { throw 'Informe o caminho completo.' }
     }
     $identifier = { param($value) if ($value -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$') { throw 'Use minusculas, numeros, - ou _.' } }
+    $siteDefault = if ($e.Contains('Site') -and $e.Site) { [string] $e.Site } else { '' }
+    if (-not $siteDefault) { $e.Site = Read-DBRequiredValue 'Site do servidor no Grafana (local, ex.: assessoria, multi-copias)' $InstanceName.ToLowerInvariant() $identifier }
     $serviceDefault = if ($m.Contains('Service') -and $m.Service -and $m.Service -cne 'erp') { [string] $m.Service } else { $InstanceName.ToLowerInvariant() }
     $m.Service = Read-DBRequiredValue 'Servico monitorado (sistema protegido, ex.: seven, dominio)' $serviceDefault $identifier
     if (-not $m.Contains('BackupIds') -or $m.BackupIds -isnot [Collections.IDictionary]) { $m.BackupIds = @{} }

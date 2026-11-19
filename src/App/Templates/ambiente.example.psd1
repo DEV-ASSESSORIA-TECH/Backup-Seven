@@ -18,5 +18,7 @@
     Execution = @{ ToolTimeoutSeconds = 21600; RunTimeoutSeconds = 39600; ReserveBytes = 1073741824; EstimatedDatabaseBytes = 0 }
     Archive = @{ CompressionLevel = 5; CpuLimitPercent = 50 }
     Retention = @{ CompletedDays = 7; LogDays = 30; KeepLocalPayload = $true }
+    # Site: label site das metricas (local do servidor); o setup pergunta.
+    # Monitoring = @{ TextfileDirectory = '...'; Site = 'assessoria' }
     Monitoring = @{ TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup' }
 }

@@ -60,7 +60,7 @@ function Read-DBEnvironment {
         if ($key -ne 'SchemaVersion' -and $e[$key] -isnot [Collections.IDictionary]) { throw "ambiente.psd1: $key must be a hashtable." }
     }
     if ($e.Contains('Monitoring')) {
-        foreach ($key in $e.Monitoring.Keys) { if ($key -ne 'TextfileDirectory') { throw "ambiente.psd1: Monitoring only accepts TextfileDirectory." } }
+        foreach ($key in $e.Monitoring.Keys) { if ($key -notin @('TextfileDirectory','Site')) { throw "ambiente.psd1: Monitoring only accepts TextfileDirectory and Site." } }
     }
     $base = Split-Path -Parent ([IO.Path]::GetFullPath($Path))
     if ($e.Contains('Tools')) { foreach ($key in @($e.Tools.Keys)) { $e.Tools[$key] = Resolve-DBPath ([string] $e.Tools[$key]) $base } }
@@ -84,9 +84,11 @@ function Merge-DBEnvironment {
         if (-not $Configuration.Tools.Contains('DbBackup')) { $Configuration.Tools.DbBackup = Join-Path ([string] $Configuration.Tools.SqlAnywhere) 'dbbackup.exe' }
         $Configuration.Tools.Remove('SqlAnywhere')
     }
-    if ($null -ne $Environment -and $Environment.Contains('Monitoring') -and $Configuration.Contains('Monitoring') -and
-        $Configuration.Monitoring -is [Collections.IDictionary] -and -not $Configuration.Monitoring.Contains('TextfileDirectory')) {
-        $Configuration.Monitoring.TextfileDirectory = $Environment.Monitoring.TextfileDirectory
+    # TextfileDirectory and Site (location label of the metrics) are per server.
+    if ($null -ne $Environment -and $Environment.Contains('Monitoring') -and $Configuration.Contains('Monitoring') -and $Configuration.Monitoring -is [Collections.IDictionary]) {
+        foreach ($key in @($Environment.Monitoring.Keys)) {
+            if (-not $Configuration.Monitoring.Contains($key)) { $Configuration.Monitoring[$key] = $Environment.Monitoring[$key] }
+        }
     }
 }
 
@@ -250,12 +252,19 @@ function Read-DBConfiguration {
             if ($c.Monitoring[$map] -isnot [Collections.IDictionary]) { throw "Monitoring.$map must be a hashtable." }
             foreach ($id in $c.Monitoring[$map].Keys) { if ($id -cnotin @($jobs.Id)) { throw "Unknown monitoring job: $id" } }
         }
+        # site = location of the server (e.g. assessoria); defaults to the instance name.
+        if (-not $c.Monitoring.Contains('Site') -or -not $c.Monitoring.Site) { $c.Monitoring.Site = $c.InstanceName.ToLowerInvariant() }
+        if ([string] $c.Monitoring.Site -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$') { throw 'Monitoring.Site must be lowercase letters, digits, - or _.' }
         $metricIds = @{}
         foreach ($j in $jobs) {
             if (-not $c.Monitoring.BackupIds.Contains($j.Id)) { $c.Monitoring.BackupIds[$j.Id] = "$($c.InstanceName.ToLowerInvariant())-$($j.Id.ToLowerInvariant())" }
             $id = [string] $c.Monitoring.BackupIds[$j.Id]
             if ($id -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$' -or $metricIds.ContainsKey($id)) { throw 'Invalid or duplicate Monitoring.BackupIds.' }
             $metricIds[$id] = $true
+            if ($j.Incremental) {
+                if ($metricIds.ContainsKey("$id-log")) { throw 'Invalid or duplicate Monitoring.BackupIds.' }
+                $metricIds["$id-log"] = $true
+            }
             if (-not $c.Monitoring.Criticality.Contains($j.Id)) { $c.Monitoring.Criticality[$j.Id] = 'alta' }
             if ($c.Monitoring.Criticality[$j.Id] -cnotin @('alta','baixa')) { throw 'Monitoring.Criticality must be alta or baixa.' }
             if ($c.Monitoring.ExpectedIntervalHours.Contains($j.Id)) {

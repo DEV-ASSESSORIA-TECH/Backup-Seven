@@ -13,6 +13,10 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
   (`Banco de dados   LogName   C:\...\contabil.log`). Com isso, os logs
   renomeados (`AAMMDDxx.LOG`) não eram limpos. A pasta passa a ser gravada na
   base no próximo backup completo.
+- Monitoramento: o label `site` voltou a ser o local do servidor
+  (`Monitoring.Site` no `ambiente.psd1`, ex.: `assessoria`, perguntado pelo
+  setup), como na 0.6. Antes era o nome da instância (`seven`, `dominio`). Sem
+  `Site`, continua o nome da instância.
 
 ## [2.2.0] - 2026-11-19
 
