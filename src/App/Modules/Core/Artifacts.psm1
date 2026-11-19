@@ -197,15 +197,19 @@ function Publish-DBPackage {
         Move-Item -LiteralPath $temp -Destination $payload -ErrorAction Stop
         # RemoteRoot is the instance's complete destination (bucket/prefix).
         # Job destination (<RemoteRoot>/<job>), then the local date of the file name.
-        $remote = '{0}/{1}/{2}' -f $Job.Destination, $Result.StartedAtUtc.ToLocalTime().ToString('yyyy/MM/dd', [Globalization.CultureInfo]::InvariantCulture), $name
+        # Incrementals go to <RemoteRoot>/<job>/incremental/ for a lifecycle rule of their own.
+        $destination = if ($Package.Role -ceq 'INCREMENTAL') { $Job.IncrementalDestination } else { $Job.Destination }
+        $remote = '{0}/{1}/{2}' -f $destination, $Result.StartedAtUtc.ToLocalTime().ToString('yyyy/MM/dd', [Globalization.CultureInfo]::InvariantCulture), $name
         # One read yields size, SHA-256 (local integrity) and MD5 (remote check).
         $digest = Get-DBFileDigest -Path $payload
-        Write-DBJson (Join-Path $bundle 'state.json') @{
+        $state = @{
             SchemaVersion = 1; Instance = $Configuration.InstanceName; Job = $Job.Id; RunId = $Runtime.RunId
             Role = $Package.Role; LocalStatus = $Result.Status; RecoveryPointUtc = $Result.StartedAtUtc.ToString('o')
             FileName = $name; SizeBytes = $digest.Length; Sha256 = $digest.Sha256; Md5 = $digest.Md5
             RemotePath = $remote; Transport = 'PENDING'
         }
+        if ($Package.Role -ceq 'INCREMENTAL') { $state.BaseRunId = $Result.Metadata.BaseRunId; $state.BaseRecoveryPointUtc = $Result.Metadata.BaseRecoveryPointUtc }
+        Write-DBJson (Join-Path $bundle 'state.json') $state
         $pendingParent = Join-Path $Runtime.Pending $Job.Id
         $null = New-Item -ItemType Directory -Path $pendingParent -Force
         $pending = Join-Path $pendingParent $base
@@ -238,25 +242,44 @@ function Remove-DBExpired {
     <#
     A bundle or log that cannot be read is reported and skipped; it never stops
     retention of the remaining items. Any skipped item fails maintenance.
+    Bundles older than Retention.CompletedDays are removed. An incremental is
+    also removed once its base is older than the previous confirmed full: a
+    new full drops the incrementals of the day before and keeps those of the
+    last day. A failed full moves nothing, so nothing new is removed.
     #>
     param([Collections.IDictionary] $Configuration, $Runtime)
     $problems = 0
     foreach ($job in $Configuration.Jobs) {
         $parent = Join-Path $Runtime.Completed $job.Id
         if (-not (Test-Path -LiteralPath $parent)) { continue }
+        $entries = @()
         foreach ($bundle in @(Get-ChildItem -LiteralPath $parent -Directory)) {
             try {
                 # Deciding expiry needs state and ownership, not a full re-hash
                 # of every retained payload on every run.
                 $state = Read-DBArtifact $bundle.FullName $Configuration -SkipPayloadHash
                 if ($state.Job -cne $job.Id -or $state.Transport -cne 'CONFIRMED') { throw 'Completed state mismatch.' }
-                if (([DateTime] $state.RecoveryPointUtc).ToUniversalTime() -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.CompletedDays)) {
-                    Remove-Item -LiteralPath $bundle.FullName -Recurse -Force -ErrorAction Stop
-                }
+                $entries += [pscustomobject]@{ Path = $bundle.FullName; State = $state; Time = ([DateTime] $state.RecoveryPointUtc).ToUniversalTime() }
             }
             catch {
                 $problems++
                 Write-DBLog $Runtime.LogPath 'Retention' "Skipped completed bundle $($bundle.FullName): $($_.Exception.Message)" 'ERROR'
+            }
+        }
+        $fulls = @($entries | Where-Object { $_.State.Role -ceq 'FULL' -and $_.State.LocalStatus -ceq 'SUCCESS' } | Sort-Object Time -Descending)
+        $threshold = if ($fulls.Count -ge 2) { $fulls[1].Time } else { $null }
+        foreach ($entry in $entries) {
+            try {
+                $expired = $entry.Time -lt [DateTime]::UtcNow.AddDays(-[int] $Configuration.Retention.CompletedDays)
+                if (-not $expired -and $null -ne $threshold -and $entry.State.Role -ceq 'INCREMENTAL') {
+                    $baseProperty = $entry.State.PSObject.Properties['BaseRecoveryPointUtc']
+                    if ($null -ne $baseProperty -and $baseProperty.Value) { $expired = ([DateTime] $baseProperty.Value).ToUniversalTime() -lt $threshold }
+                }
+                if ($expired) { Remove-Item -LiteralPath $entry.Path -Recurse -Force -ErrorAction Stop }
+            }
+            catch {
+                $problems++
+                Write-DBLog $Runtime.LogPath 'Retention' "Skipped completed bundle $($entry.Path): $($_.Exception.Message)" 'ERROR'
             }
         }
     }

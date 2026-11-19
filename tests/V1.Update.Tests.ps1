@@ -12,7 +12,7 @@ BeforeAll {
         [IO.Compression.ZipFile]::ExtractToDirectory($script:Package.FullName, $root)
         Set-Content -LiteralPath (Join-Path $root 'App/VERSION') -Value '2.0.0'
         Set-Content -LiteralPath (Join-Path $root 'App/Modules/Core/Removed.psm1') -Value 'old'
-        Set-Content -LiteralPath (Join-Path $root 'Setup.bat') -Value 'old launcher'
+        Set-Content -LiteralPath (Join-Path $root 'DBBackup.bat') -Value 'old launcher'
         foreach ($path in @('Instances/acme/Secrets', 'Instances/acme/Runtime', 'Completed/acme/db', 'Logs/acme')) { $null = New-Item -ItemType Directory -Path (Join-Path $root $path) -Force }
         Set-Content -LiteralPath (Join-Path $root 'Instances/acme/config.psd1') -Value '@{ InstanceName = ''acme'' }'
         Set-Content -LiteralPath (Join-Path $root 'Instances/acme/Secrets/rclone.conf') -Value 'secret'
@@ -33,13 +33,13 @@ BeforeAll {
     }
 }
 
-Describe 'DBBackup updater (Atualizar.bat)' {
+Describe 'DBBackup updater (DBBackup.bat, opcao 8)' {
     It 'is shipped with a launcher that runs a temporary copy and keeps the rest of the bat in one block' {
         $list = @(Get-Content (Join-Path $script:Repo 'scripts/package.files.json') -Raw | ConvertFrom-Json)
-        $list.target | Should -Contain 'Atualizar.bat'
+        $list.target | Should -Contain 'DBBackup.bat'
         $list.target | Should -Contain 'App/Update.ps1'
-        $bat = [IO.File]::ReadAllText((Join-Path $script:Repo 'src/Atualizar.bat'))
-        $bat | Should -Match '(?s)\(\r\n\s+copy /y "%~dp0App\\Update\.ps1" "%DBBACKUP_UPDATER%".*-File "%DBBACKUP_UPDATER%" -InstallRoot "%~dp0\." -PackagePath "%DBBACKUP_PACKAGE%".*exit /b\r\n\)\r\n$'
+        $bat = [IO.File]::ReadAllText((Join-Path $script:Repo 'src/DBBackup.bat'))
+        $bat | Should -Match '(?s)\(\r\n\s+copy /y "%~dp0App\\Update\.ps1" "%DBBACKUP_UPDATER%".*-File "%DBBACKUP_UPDATER%" -InstallRoot "%~dp0\." -PackagePath "%DBBACKUP_PACKAGE%".*call "%~f0"\r\n\s+exit /b\r\n\)\r\n$'
         $bat | Should -Not -Match '(?<!\r)\n'
     }
 
@@ -59,14 +59,14 @@ Describe 'DBBackup updater (Atualizar.bat)' {
         (Get-Content (Join-Path $root 'App/VERSION') -Raw).Trim() | Should -Be ([string] $script:Version)
         Join-Path $root 'App/Modules/Core/Removed.psm1' | Should -Not -Exist
         Join-Path $root 'App/Update.ps1' | Should -Exist
-        (Get-Content (Join-Path $root 'Setup.bat') -Raw) | Should -Match 'App\\Setup\.ps1'
+        (Get-Content (Join-Path $root 'DBBackup.bat') -Raw) | Should -Match 'App\\Menu\.ps1'
         Get-TestState $root | Should -Be $before
         $previous = @(Get-ChildItem (Join-Path $root 'Versoes-Anteriores') -Directory)
         $previous.Count | Should -Be 1
         $previous[0].Name | Should -Match '^2\.0\.0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$'
         (Get-Content (Join-Path $previous[0].FullName 'App/VERSION') -Raw).Trim() | Should -Be '2.0.0'
         Join-Path $previous[0].FullName 'App/Modules/Core/Removed.psm1' | Should -Exist
-        (Get-Content (Join-Path $previous[0].FullName 'Setup.bat') -Raw).Trim() | Should -Be 'old launcher'
+        (Get-Content (Join-Path $previous[0].FullName 'DBBackup.bat') -Raw).Trim() | Should -Be 'old launcher'
         $output | Should -Match 'Checksum do pacote conferido'
     }
 
@@ -127,7 +127,7 @@ Describe 'DBBackup updater (Atualizar.bat)' {
         { Install-DBUpdate -InstallRoot $root -Staging $staging -CurrentVersion ([version] '2.0.0') } | Should -Throw '*versao 2.0.0 foi restaurada*disk full*'
         (Get-Content (Join-Path $root 'App/VERSION') -Raw).Trim() | Should -Be '2.0.0'
         Join-Path $root 'App/Modules/Core/Removed.psm1' | Should -Exist
-        (Get-Content (Join-Path $root 'Setup.bat') -Raw).Trim() | Should -Be 'old launcher'
+        (Get-Content (Join-Path $root 'DBBackup.bat') -Raw).Trim() | Should -Be 'old launcher'
     }
 
     It 'keeps only the three newest previous versions' {

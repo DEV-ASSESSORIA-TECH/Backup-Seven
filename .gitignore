@@ -10,6 +10,11 @@ Instances/
 Completed/
 **/Secrets/**
 
+# Versioned server configurations (no secrets): configuracoes/<servidor>/
+!/configuracoes/**/config.psd1
+!/configuracoes/**/ambiente.psd1
+Configuracoes-Exportadas/
+
 # Runtime data and build output
 Runtime/
 src/Runtime/

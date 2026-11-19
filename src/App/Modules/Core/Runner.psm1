@@ -4,6 +4,7 @@ Import-Module (Join-Path $PSScriptRoot 'Runtime.psm1')
 Import-Module (Join-Path $PSScriptRoot 'Observation.psm1')
 Import-Module (Join-Path $PSScriptRoot 'Capacity.psm1')
 Import-Module (Join-Path $PSScriptRoot 'Process.psm1')
+Import-Module (Join-Path $PSScriptRoot 'Incremental.psm1')
 
 function Get-DBRunExitCode {
     param([bool] $Failed, [bool] $Degraded, [bool] $Maintenance)
@@ -38,8 +39,10 @@ function Invoke-DBBackup {
     5 every job published, at least one degraded; 4 backups published but an
     auxiliary step failed (retention, interrupted-run cleanup, log upload or
     monitoring textfile); 0 success. 2 configuration/dependency; 3 lock busy.
+    Mode Incremental runs the cumulative log backup of SQL Anywhere jobs with
+    Incremental.Enabled; without a valid base the job is promoted to a full.
     #>
-    param([string] $ConfigPath, [string] $Job, [switch] $All)
+    param([string] $ConfigPath, [string] $Job, [switch] $All, [ValidateSet('Full','Incremental')][string] $Mode = 'Full')
     try {
         $c = Read-DBConfiguration $ConfigPath
         if ($All) { $jobs = @($c.Jobs) }
@@ -52,6 +55,12 @@ function Invoke-DBBackup {
                 if ($match.Count -ne 1) { throw "Unknown job: $id (configured: $(@($c.Jobs.Id) -join ', '))" }
                 $match[0]
             })
+        }
+        if ($Mode -eq 'Incremental') {
+            if ($All) { $jobs = @($jobs | Where-Object { $_.Incremental }) }
+            $without = @($jobs | Where-Object { -not $_.Incremental } | ForEach-Object Id)
+            if ($without.Count) { throw "Incremental requires Incremental.Enabled: $($without -join ', ')" }
+            if (-not $jobs.Count) { throw 'No job of this instance has Incremental.Enabled.' }
         }
         Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Providers/Providers.psm1')
         Import-Module (Join-Path $PSScriptRoot 'Artifacts.psm1')
@@ -69,7 +78,7 @@ function Invoke-DBBackup {
     try {
         $runtime = New-DBRuntime $c
         if ($null -eq $runtime) { return 3 }
-        Write-DBLog $runtime.LogPath 'Startup' "DBBackup instance $($c.InstanceName); run $($runtime.RunId)."
+        Write-DBLog $runtime.LogPath 'Startup' "DBBackup instance $($c.InstanceName); run $($runtime.RunId); mode $Mode."
         # The deadline covers every native tool of the run, retries included.
         $deadline = [DateTime]::UtcNow.AddSeconds([double] $c.Execution.RunTimeoutSeconds)
         Set-DBToolDeadline $deadline
@@ -94,10 +103,21 @@ function Invoke-DBBackup {
         foreach ($j in $jobs) {
             $watch = [Diagnostics.Stopwatch]::StartNew()
             $jobStatus = 'FAILED'
+            $jobMode = $Mode
+            $base = $null
             try {
+                if ($jobMode -eq 'Incremental') {
+                    try { $base = Read-DBIncrementalBase $c $j.Id }
+                    catch { Write-DBLog $runtime.LogPath $j.Id "Incremental base unreadable: $($_.Exception.Message)" 'WARN' }
+                    if ($null -eq $base) {
+                        $jobMode = 'Full'
+                        Write-DBLog $runtime.LogPath $j.Id 'No valid base full for the incremental: running a full backup instead.' 'WARN'
+                    }
+                    else { Write-DBLog $runtime.LogPath $j.Id "Incremental since base $($base.BaseRunId) ($($base.BaseRecoveryPointUtc))." }
+                }
                 Assert-DBToolDeadline
                 $estimate = Get-DBJobSpaceEstimate -Configuration $c -Job $j
-                if ($estimate.Source -eq 'unknown') {
+                if ($estimate.Source -eq 'unknown' -and $jobMode -eq 'Full') {
                     try {
                         $probed = Get-DBProviderSizeEstimate -Configuration $c -Job $j -Runtime $runtime
                         if ($null -ne $probed -and [long] $probed -gt 0) {
@@ -111,9 +131,10 @@ function Invoke-DBBackup {
                 Write-DBLog $runtime.LogPath $j.Id "Space estimate: $($estimate.Bytes) bytes ($($estimate.Source))."
                 Assert-DBFreeSpace -Path $runtime.Work -RequiredBytes $estimate.Bytes -ReserveBytes $c.Execution.ReserveBytes
                 $source = if ($j.Provider -eq 'Directory') { $j.SourcePath } else { "database $($j.Database)" }
-                Write-DBLog $runtime.LogPath $j.Id "Step 1/4: $($j.Provider) backup of $source started."
-                $result = Invoke-DBProvider -Configuration $c -Job $j -Runtime $runtime
-                if ($result.Status -eq 'SUCCESS' -and $j.Provider -ne 'Directory') {
+                $label = if ($jobMode -eq 'Incremental') { 'incremental (transaction log)' } else { 'backup' }
+                Write-DBLog $runtime.LogPath $j.Id "Step 1/4: $($j.Provider) $label of $source started."
+                $result = Invoke-DBProvider -Configuration $c -Job $j -Runtime $runtime -Mode $jobMode -Base $base
+                if ($result.Status -eq 'SUCCESS' -and $j.Provider -ne 'Directory' -and $jobMode -eq 'Full') {
                     try {
                         [long] $payloadBytes = 0
                         foreach ($package in $result.Packages) { $payloadBytes += Get-DBDirectorySize $package.SourcePath }
@@ -130,6 +151,23 @@ function Invoke-DBBackup {
                     catch { $failed = $true; Write-DBLog $runtime.LogPath $j.Id $_.Exception.Message 'ERROR' }
                 }
                 if ($result.Status -eq 'FAILED' -or $published -ne $result.Packages.Count -or $published -eq 0) { $failed = $true; $failedJobs.Add($j.Id) }
+                if ($j.Provider -eq 'SQLAnywhere' -and $j.Incremental -and $jobMode -eq 'Full') {
+                    # dbbackup -r restarted the production log: this full is the new
+                    # base. If it was not packaged, the next incremental is a full.
+                    if ($published -eq $result.Packages.Count -and $published -gt 0 -and $result.Status -ne 'FAILED') {
+                        $logDirectory = if ($result.Metadata.Contains('ProductionLogDirectory')) { [string] $result.Metadata.ProductionLogDirectory } else { $null }
+                        Save-DBIncrementalBase -Configuration $c -Job $j.Id -RunId $runtime.RunId -RecoveryPointUtc $result.StartedAtUtc -LogDirectory $logDirectory
+                        if (-not $logDirectory) { Write-DBLog $runtime.LogPath $j.Id 'Production log folder unknown (dbping LogName); renamed logs are not cleaned.' 'WARN' }
+                    }
+                    else { Clear-DBIncrementalBase -Configuration $c -Job $j.Id }
+                }
+                if ($j.Provider -eq 'SQLAnywhere' -and $j.Incremental) {
+                    try {
+                        $removedLogs = @(Remove-DBRenamedLog -Configuration $c -Job $j)
+                        if ($removedLogs.Count) { Write-DBLog $runtime.LogPath $j.Id "Removed renamed production logs already in a confirmed full: $($removedLogs -join ', ')." }
+                    }
+                    catch { $maintenance = $false; $auxiliary.Add("logs renomeados ($($j.Id))"); Write-DBLog $runtime.LogPath $j.Id "Renamed log cleanup failed: $($_.Exception.Message)" 'ERROR' }
+                }
                 if ($published -eq $result.Packages.Count -and $published -gt 0 -and $result.Status -ne 'FAILED') { $jobStatus = $result.Status }
                 if ($result.Status -eq 'DEGRADED') { $degraded = $true; $degradedJobs.Add($j.Id) }
                 foreach ($errorMessage in $result.Errors) { Write-DBLog $runtime.LogPath $j.Id $errorMessage 'WARN' }
@@ -137,7 +175,7 @@ function Invoke-DBBackup {
             }
             catch { $failed = $true; $failedJobs.Add($j.Id); Write-DBLog $runtime.LogPath $j.Id $_.Exception.Message 'ERROR' }
             finally {
-                if (-not (Publish-DBJobMonitoring -Configuration $c -Job $j -Status $jobStatus -DurationSeconds $watch.Elapsed.TotalSeconds -LogPath $runtime.LogPath)) { $maintenance = $false; $auxiliary.Add("monitoramento ($($j.Id))") }
+                if (-not (Publish-DBJobMonitoring -Configuration $c -Job $j -Status $jobStatus -DurationSeconds $watch.Elapsed.TotalSeconds -LogPath $runtime.LogPath -Mode $jobMode)) { $maintenance = $false; $auxiliary.Add("monitoramento ($($j.Id))") }
                 $null = $monitored.Add($j.Id)
             }
         }
@@ -166,7 +204,7 @@ function Invoke-DBBackup {
         if ($null -ne $runtime) { Write-DBRunResult $runtime.LogPath $exitCode $failedJobs $degradedJobs $auxiliary -Reason (Protect-DBMessage $_.Exception.Message) }
         if ($null -ne $runtime) {
             foreach ($j in $jobs) {
-                if (-not $monitored.Contains($j.Id)) { $null = Publish-DBJobMonitoring -Configuration $c -Job $j -Status FAILED -DurationSeconds $runWatch.Elapsed.TotalSeconds -LogPath $runtime.LogPath }
+                if (-not $monitored.Contains($j.Id)) { $null = Publish-DBJobMonitoring -Configuration $c -Job $j -Status FAILED -DurationSeconds $runWatch.Elapsed.TotalSeconds -LogPath $runtime.LogPath -Mode $Mode }
             }
         }
     }

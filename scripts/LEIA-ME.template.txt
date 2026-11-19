@@ -17,18 +17,22 @@ Requisitos
   Windows com PowerShell 7.2+ (instalador MSI), 7-Zip, age e rclone.
   MySQL: mysql.exe e mysqldump.exe. SQL Anywhere: dbbackup.exe 17.
 
-Como usar (clique duas vezes; cada um pede elevacao e lista as instancias)
-  Setup.bat                 Cria uma instancia ou adiciona jobs a uma existente.
-  Editar-Configuracao.bat   Abre o config.psd1 como Administrador, valida e aplica.
-  Aplicar-Configuracao.bat  Reaplica um config.psd1 (ACL, diagnostico, tarefas).
-  Diagnosticar.bat          Verificacoes locais, sem backup nem alteracoes.
-  Executar-Backup.bat       Backup agora (escolha os jobs); andamento na janela.
-  Atualizar.bat             Atualiza para a ultima versao publicada no GitHub.
+Como usar: clique duas vezes em DBBackup.bat (pede elevacao) e escolha
+  1  Nova instancia / adicionar jobs
+  2  Editar configuracao de uma instancia (valida e aplica)
+  3  Aplicar configuracao (ACL, diagnostico, tarefas agendadas)
+  4  Diagnosticar (verificacoes locais, sem backup)
+  5  Executar backup agora (completo ou incremental; andamento na janela)
+  6  Ultimos resultados (linha RESULTADO de cada execucao)
+  7  Ambiente do servidor (ferramentas e padroes: ambiente.psd1)
+  8  Atualizar para a ultima versao publicada no GitHub
+  9  Configuracoes versionadas (puxar do GitHub / exportar para commit)
 
-Pastas criadas ao lado deste arquivo
-  Instances\<instancia>\config.psd1   configuracao (use Editar-Configuracao.bat)
+Arquivos e pastas ao lado deste arquivo
+  ambiente.psd1                       ferramentas e padroes de todas as instancias (opcao 7)
+  Instances\<instancia>\config.psd1   configuracao da instancia (opcao 2)
   Instances\<instancia>\Secrets\      credenciais (somente SYSTEM e Administradores)
-  Instances\<instancia>\Runtime\      trabalho temporario e pendencias (restrita)
+  Instances\<instancia>\Runtime\      trabalho temporario, pendencias e base do incremental (restrita)
   Completed\<instancia>\<job>\        pacotes criptografados mantidos localmente
   Logs\<instancia>\                   um log por execucao; a ultima linha e "RESULTADO: ..."
 
@@ -36,7 +40,7 @@ Agendador de Tarefas: pasta \DBBackup\, tarefas <instancia>-<tarefa>.
 Codigos de saida: 0 sucesso, 1 falha, 2 configuracao, 3 ja em execucao,
 4 etapa auxiliar com falha, 5 backup degradado.
 
-Atualizacao: rode Atualizar.bat. Ele confere o checksum, guarda a versao atual
-em Versoes-Anteriores e troca so App e os arquivos .bat; Instances, Completed e
-Logs nao sao alterados. Sem internet: arraste o DBBackup-X.Y.Z.zip (com o
-.sha256 ao lado) sobre o Atualizar.bat.
+Atualizacao: opcao 8 do menu. Ela confere o checksum, guarda a versao atual
+em Versoes-Anteriores e troca so App e os arquivos .bat; ambiente.psd1,
+Instances, Completed e Logs nao sao alterados. Sem internet: arraste o
+DBBackup-X.Y.Z.zip (com o .sha256 ao lado) sobre o DBBackup.bat.

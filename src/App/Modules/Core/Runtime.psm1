@@ -85,7 +85,7 @@ function New-DBRuntime {
     catch { $lock.Dispose(); throw }
 }
 
-# Process-wide switch (like the tool deadline): Executar-Backup.bat shows each
+# Process-wide switch (like the tool deadline): the menu backup option shows each
 # log line in its window; scheduled runs only write the file.
 $script:ConsoleLogKey = 'DBBackup.ConsoleLog'
 

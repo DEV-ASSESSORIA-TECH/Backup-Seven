@@ -1,11 +1,11 @@
 #requires -Version 7.2
 <#
-Updates a DBBackup installation in place. Atualizar.bat runs a temporary copy
+Updates a DBBackup installation in place. DBBackup.bat (menu option 8) runs a temporary copy
 of this file, so the App folder (and this script) can be replaced.
 
 Without -PackagePath: asks GitHub for the latest release, downloads the ZIP
 and its .sha256 and verifies the checksum. With -PackagePath: uses a ZIP that
-was downloaded by hand (offline servers; drag the ZIP onto Atualizar.bat).
+was downloaded by hand (offline servers; drag the ZIP onto DBBackup.bat).
 
 Only App\ and the files at the package root (.bat, LEIA-ME.txt) are replaced.
 Instances\ (config.psd1, Secrets, Runtime), Completed\ and Logs\ are never
@@ -78,7 +78,7 @@ function Assert-DBPackageChecksum {
 function Expand-DBUpdatePackage {
     <#
     Extracts the ZIP into an empty directory and checks that it is a DBBackup
-    package: App\VERSION, App\Setup.ps1, App\Backup.ps1 and Setup.bat present,
+    package: App\VERSION, App\Setup.ps1, App\Backup.ps1 and DBBackup.bat present,
     nothing but App\, .bat files and LEIA-ME.txt at the root. Returns the version.
     #>
     param([Parameter(Mandatory)][string] $ZipPath, [Parameter(Mandatory)][string] $Destination)
@@ -86,7 +86,7 @@ function Expand-DBUpdatePackage {
     if (@(Get-ChildItem -LiteralPath $Destination -Force).Count) { throw 'A pasta de extracao precisa estar vazia.' }
     # .NET refuses entries that would land outside the destination.
     [IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $Destination)
-    foreach ($required in @('App/VERSION', 'App/Setup.ps1', 'App/Backup.ps1', 'Setup.bat')) {
+    foreach ($required in @('App/VERSION', 'App/Setup.ps1', 'App/Backup.ps1', 'DBBackup.bat')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Destination $required) -PathType Leaf)) { throw "O ZIP nao e um pacote do DBBackup (falta $required)." }
     }
     foreach ($item in @(Get-ChildItem -LiteralPath $Destination -Force)) {
@@ -215,7 +215,7 @@ function Invoke-DBUpdate {
             'Consultando a ultima versao no GitHub...' | Out-Host
             try { $release = Get-DBLatestRelease -Repository $Repository -ApiBaseUrl $ApiBaseUrl }
             catch {
-                throw "Nao foi possivel consultar o GitHub ($($_.Exception.Message)). Sem internet: baixe DBBackup-X.Y.Z.zip e .sha256 da pagina de releases e arraste o ZIP sobre o Atualizar.bat."
+                throw "Nao foi possivel consultar o GitHub ($($_.Exception.Message)). Sem internet: baixe DBBackup-X.Y.Z.zip e .sha256 da pagina de releases e arraste o ZIP sobre o DBBackup.bat."
             }
             "Ultima versao publicada: $($release.Version) - $($release.Url)" | Out-Host
             if ($release.Version -le $current) { "Ja esta na versao mais recente ($current). Nada a fazer." | Out-Host; return 0 }
@@ -253,7 +253,7 @@ function Invoke-DBUpdate {
             foreach ($config in $configs) {
                 "`n== Aplicando $($config.FullName)" | Out-Host
                 & $pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'App/Setup.ps1') -Apply -ConfigPath $config.FullName
-                if ($LASTEXITCODE -ne 0) { Write-Warning "Aplicacao terminou com codigo $LASTEXITCODE; rode Aplicar-Configuracao.bat para esta instancia." }
+                if ($LASTEXITCODE -ne 0) { Write-Warning "Aplicacao terminou com codigo $LASTEXITCODE; use Aplicar no menu (DBBackup.bat) para esta instancia." }
             }
         }
         return 0

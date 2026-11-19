@@ -1,27 +1,7 @@
 [
   {
-    "source": "src/Setup.bat",
-    "target": "Setup.bat"
-  },
-  {
-    "source": "src/Aplicar-Configuracao.bat",
-    "target": "Aplicar-Configuracao.bat"
-  },
-  {
-    "source": "src/Editar-Configuracao.bat",
-    "target": "Editar-Configuracao.bat"
-  },
-  {
-    "source": "src/Diagnosticar.bat",
-    "target": "Diagnosticar.bat"
-  },
-  {
-    "source": "src/Executar-Backup.bat",
-    "target": "Executar-Backup.bat"
-  },
-  {
-    "source": "src/Atualizar.bat",
-    "target": "Atualizar.bat"
+    "source": "src/DBBackup.bat",
+    "target": "DBBackup.bat"
   },
   {
     "source": "VERSION",
@@ -38,6 +18,10 @@
   {
     "source": "src/App/Setup.ps1",
     "target": "App/Setup.ps1"
+  },
+  {
+    "source": "src/App/Menu.ps1",
+    "target": "App/Menu.ps1"
   },
   {
     "source": "src/App/Update.ps1",
@@ -118,5 +102,17 @@
   {
     "source": "src/App/Templates/config.example.psd1",
     "target": "App/Templates/config.example.psd1"
+  },
+  {
+    "source": "src/App/Modules/Core/Incremental.psm1",
+    "target": "App/Modules/Core/Incremental.psm1"
+  },
+  {
+    "source": "src/App/Modules/Core/ConfigSync.psm1",
+    "target": "App/Modules/Core/ConfigSync.psm1"
+  },
+  {
+    "source": "src/App/Templates/ambiente.example.psd1",
+    "target": "App/Templates/ambiente.example.psd1"
   }
 ]
