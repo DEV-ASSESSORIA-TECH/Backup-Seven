@@ -232,3 +232,17 @@ Describe 'Monitoring in the guided setup' {
         $data.Monitoring.BackupIds.Fiscal | Should -Be 'seven-fiscal'
     }
 }
+
+Describe 'Server environment editing (menu option 7)' {
+    It 'validates ambiente.psd1 and every instance after the editor closes' {
+        $root = Join-Path $TestDrive 'envedit'
+        $instance = Join-Path $root 'Instances/acme'
+        $null = New-Item -ItemType Directory (Join-Path $instance 'Secrets') -Force
+        Set-Content (Join-Path $instance 'config.psd1') (Get-DBTestConfigText -InstanceName 'acme' -RemoteRoot 's3:bucket/ACME')
+        Set-Content (Join-Path $root 'ambiente.psd1') "@{ SchemaVersion = 1; Monitoring = @{ TextfileDirectory = 'C:\alloy'; Site = 'assessoria' } }"
+        Mock Start-Process {} -ModuleName Setup
+        # 'n' to every question: a valid, unchanged file is not applied; an invalid one would throw.
+        Mock Read-Host { 'n' } -ModuleName Setup
+        Edit-DBEnvironment -InstancesRoot (Join-Path $root 'Instances') -TemplateRoot (Join-Path $script:Repo 'src/App/Templates') | Should -BeFalse
+    }
+}

@@ -914,7 +914,8 @@ function Edit-DBEnvironment {
             catch { throw "Instancia $(Split-Path -Leaf $config.DirectoryName): $($_.Exception.Message)" }
         }
     }
-    return Edit-DBConfiguration -ConfigPath $path -Editor $Editor -Validate $check
+    # The check reads $InstancesRoot by dynamic scope: pass it on, or Edit-DBConfiguration's empty parameter hides it.
+    return Edit-DBConfiguration -ConfigPath $path -InstancesRoot $InstancesRoot -Editor $Editor -Validate $check
 }
 
 Export-ModuleMember -Function Edit-DBEnvironment, Save-DBEnvironment, Get-DBSetupEnvironment, Read-DBToolPath, Read-DBMonitoring, Edit-DBConfiguration, Read-DBConfirmation, ConvertTo-DBTimeList, Invoke-DBInteractiveSetup, Invoke-DBConfigurationApply, Test-DBInstance, ConvertTo-DBDataLiteral, Invoke-DBConnectionCheck, Test-DBDatabaseConnection, Get-DBOwnedTask, Get-DBSetupSummary, Split-DBRemoteRoot, Initialize-DBSharedSecret, Read-DBJob, Add-DBScheduledJob, Save-DBConfigurationData, ConvertTo-DBJobId, Find-DBCredentialCandidate, Restore-DBInheritedAccess
