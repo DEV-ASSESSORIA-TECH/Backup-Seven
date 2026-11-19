@@ -39,6 +39,57 @@ function Get-DBDefaultPath {
     return @{ RuntimeRoot = 'Runtime'; CompletedRoot = "../../Completed/$InstanceName"; LogRoot = "../../Logs/$InstanceName" }
 }
 
+function Get-DBEnvironmentPath {
+    <# ambiente.psd1 at the installation root: <root>\Instances\<instance>\config.psd1 -> <root>\ambiente.psd1. #>
+    param([Parameter(Mandatory)][string] $InstanceRoot)
+    return Join-Path (Split-Path -Parent (Split-Path -Parent $InstanceRoot)) 'ambiente.psd1'
+}
+
+function Read-DBEnvironment {
+    <#
+    Server-wide settings shared by every instance: tool paths (Tools; the
+    SQL Anywhere folder as Tools.SqlAnywhere), Execution, Archive and Retention
+    defaults and the Grafana Alloy textfile folder. Returns $null when absent.
+    #>
+    param([Parameter(Mandatory)][string] $Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $e = Import-PowerShellDataFile -LiteralPath $Path
+    if (-not $e.Contains('SchemaVersion') -or $e.SchemaVersion -ne 1) { throw "ambiente.psd1: SchemaVersion must be 1 ($Path)." }
+    foreach ($key in $e.Keys) {
+        if ($key -notin @('SchemaVersion','Tools','Execution','Archive','Retention','Monitoring')) { throw "ambiente.psd1: unknown key $key." }
+        if ($key -ne 'SchemaVersion' -and $e[$key] -isnot [Collections.IDictionary]) { throw "ambiente.psd1: $key must be a hashtable." }
+    }
+    if ($e.Contains('Monitoring')) {
+        foreach ($key in $e.Monitoring.Keys) { if ($key -ne 'TextfileDirectory') { throw "ambiente.psd1: Monitoring only accepts TextfileDirectory." } }
+    }
+    $base = Split-Path -Parent ([IO.Path]::GetFullPath($Path))
+    if ($e.Contains('Tools')) { foreach ($key in @($e.Tools.Keys)) { $e.Tools[$key] = Resolve-DBPath ([string] $e.Tools[$key]) $base } }
+    return $e
+}
+
+function Merge-DBEnvironment {
+    <# Instance values win; missing keys come from ambiente.psd1, then from built-in defaults. #>
+    param([Collections.IDictionary] $Configuration, [Collections.IDictionary] $Environment)
+    $builtIn = @{ Archive = @{ CompressionLevel = 5; CpuLimitPercent = 50 }; Retention = @{ CompletedDays = 7; LogDays = 30 } }
+    foreach ($section in @('Tools','Execution','Archive','Retention')) {
+        if ($Configuration.Contains($section) -and $Configuration[$section] -isnot [Collections.IDictionary]) { throw "Section must be a hashtable: $section" }
+        $merged = @{}
+        if ($builtIn.Contains($section)) { foreach ($key in $builtIn[$section].Keys) { $merged[$key] = $builtIn[$section][$key] } }
+        if ($null -ne $Environment -and $Environment.Contains($section)) { foreach ($key in $Environment[$section].Keys) { $merged[$key] = $Environment[$section][$key] } }
+        if ($Configuration.Contains($section)) { foreach ($key in $Configuration[$section].Keys) { $merged[$key] = $Configuration[$section][$key] } }
+        $Configuration[$section] = $merged
+    }
+    # Tools.SqlAnywhere is a folder (...\Tools or ...\Bin64) holding dbbackup.exe and dbping.exe.
+    if ($Configuration.Tools.Contains('SqlAnywhere')) {
+        if (-not $Configuration.Tools.Contains('DbBackup')) { $Configuration.Tools.DbBackup = Join-Path ([string] $Configuration.Tools.SqlAnywhere) 'dbbackup.exe' }
+        $Configuration.Tools.Remove('SqlAnywhere')
+    }
+    if ($null -ne $Environment -and $Environment.Contains('Monitoring') -and $Configuration.Contains('Monitoring') -and
+        $Configuration.Monitoring -is [Collections.IDictionary] -and -not $Configuration.Monitoring.Contains('TextfileDirectory')) {
+        $Configuration.Monitoring.TextfileDirectory = $Environment.Monitoring.TextfileDirectory
+    }
+}
+
 function Read-DBConfiguration {
     <#
     Schema 2: an instance (destination credentials, age recipients, schedule,
@@ -53,10 +104,12 @@ function Read-DBConfiguration {
         if ($c.Contains('SchemaVersion') -and $c.SchemaVersion -eq 1) { throw 'Configuration schema 1 (DBBackup 1.x): run Setup to create the 2.0 configuration.' }
         throw 'SchemaVersion must be 2.'
     }
-    foreach ($key in @('InstanceName', 'Tools', 'Storage', 'Encryption', 'Jobs', 'Archive', 'Retention')) {
+    foreach ($key in @('InstanceName', 'Storage', 'Encryption', 'Jobs')) {
         if (-not $c.Contains($key)) { throw "Missing configuration key: $key" }
     }
     Assert-DBIdentifier $c.InstanceName
+    $c.EnvironmentPath = Get-DBEnvironmentPath (Split-Path -Parent $Path)
+    Merge-DBEnvironment $c (Read-DBEnvironment $c.EnvironmentPath)
     if (-not $c.Contains('Paths')) { $c.Paths = Get-DBDefaultPath $c.InstanceName }
     foreach ($key in @('Tools', 'Storage', 'Encryption', 'Paths', 'Archive', 'Retention')) {
         if ($c[$key] -isnot [Collections.IDictionary]) { throw "Section must be a hashtable: $key" }
@@ -95,7 +148,7 @@ function Read-DBConfiguration {
     foreach ($entry in $entries) {
         if ($entry -isnot [Collections.IDictionary]) { throw 'Each job must be a hashtable.' }
         foreach ($key in $entry.Keys) {
-            if ($key -notin @('Id','Provider','RemoteRoot','Database','CredentialFile','ExtraArguments','SourcePath')) { throw "Unknown job key: $key" }
+            if ($key -notin @('Id','Provider','RemoteRoot','Database','CredentialFile','ExtraArguments','SourcePath','Incremental')) { throw "Unknown job key: $key" }
         }
         foreach ($key in @('Id','Provider','RemoteRoot')) { if (-not $entry.Contains($key)) { throw "Missing job field: $key" } }
         $id = [string] $entry.Id
@@ -110,6 +163,22 @@ function Read-DBConfiguration {
         $job = [ordered]@{
             Id = $id; Provider = $provider; RemoteRoot = $remoteRoot; Destination = "$remoteRoot/$id"
             Database = $null; CredentialFile = $null; ExtraArguments = @(); SourcePath = $null
+            Incremental = $false; KeepRenamedLogDays = 3; IncrementalDestination = "$remoteRoot/$id/incremental"
+        }
+        if ($entry.Contains('Incremental')) {
+            # SQL Anywhere only: the full backup renames and restarts the
+            # production log (dbbackup -r) and incrementals copy the log
+            # accumulated since that full (dbbackup -t, no rename).
+            if ($provider -ne 'SQLAnywhere') { throw "Job $id`: Incremental is only valid for SQLAnywhere." }
+            $incremental = $entry.Incremental
+            if ($incremental -isnot [Collections.IDictionary] -or -not $incremental.Contains('Enabled') -or $incremental.Enabled -isnot [bool]) { throw "Job $id`: Incremental must be @{ Enabled = `$true|`$false; KeepRenamedLogDays = 3 }." }
+            foreach ($key in $incremental.Keys) { if ($key -notin @('Enabled','KeepRenamedLogDays')) { throw "Job $id`: unknown Incremental key $key." } }
+            $job.Incremental = $incremental.Enabled
+            if ($incremental.Contains('KeepRenamedLogDays')) {
+                $days = 0
+                if (-not [int]::TryParse([string] $incremental.KeepRenamedLogDays, [ref] $days) -or $days -lt 1) { throw "Job $id`: KeepRenamedLogDays must be 1 or more." }
+                $job.KeepRenamedLogDays = $days
+            }
         }
         if ($provider -eq 'Directory') {
             foreach ($key in @('Database','CredentialFile','ExtraArguments')) { if ($entry.Contains($key)) { throw "Job $id`: $key is not valid for Directory." } }
@@ -294,4 +363,4 @@ function Select-DBConfigPath {
     throw 'Nenhuma configuracao selecionada.'
 }
 
-Export-ModuleMember -Function Get-DBInstanceConfigPath, Select-DBConfigPath, Get-DBDefaultPath, Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, ConvertTo-DBRemoteRoot, Test-DBRemoteOverlap, Assert-DBInstanceIsolation
+Export-ModuleMember -Function Get-DBEnvironmentPath, Read-DBEnvironment, Merge-DBEnvironment, Get-DBInstanceConfigPath, Select-DBConfigPath, Get-DBDefaultPath, Read-DBConfiguration, Resolve-DBPath, Test-DBPathWithin, Assert-DBIdentifier, ConvertTo-DBRemoteRoot, Test-DBRemoteOverlap, Assert-DBInstanceIsolation

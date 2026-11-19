@@ -83,8 +83,35 @@ function Get-DBSqlAnywhereSizeEstimate {
     finally { if (Test-Path -LiteralPath $options) { Remove-Item -LiteralPath $options -Force } }
 }
 
+function Get-DBSqlAnywhereLogDirectory {
+    <#
+    Folder of the production transaction log (dbping -d -pd LogName), where
+    dbbackup -r leaves the renamed logs (AAMMDDxx.log). $null when unknown.
+    #>
+    param([Collections.IDictionary] $Configuration, [string] $OptionsPath)
+    $folder = [IO.Path]::GetDirectoryName([string] $Configuration.Tools.DbBackup)
+    if (-not $folder) { return $null }
+    $dbping = Join-Path $folder 'dbping.exe'
+    if (-not (Test-Path -LiteralPath $dbping -PathType Leaf)) { return $null }
+    try {
+        $probe = Invoke-DBTool -Executable $dbping -Arguments @('-d', '-pd', 'LogName', "@$OptionsPath") -TimeoutSeconds 60
+        if ($probe.ExitCode -ne 0) { return $null }
+        $match = [regex]::Match([string] $probe.StdOut, '(?im)^\s*LogName\s*[:=]\s*(?<path>[A-Za-z]:\\[^\r\n]+?\.log)\s*$')
+        if (-not $match.Success) { return $null }
+        return Split-Path -Parent $match.Groups['path'].Value
+    }
+    catch { return $null }
+}
+
 function Invoke-DBSqlAnywhere {
-    param([Collections.IDictionary] $Configuration, $Job, $Runtime)
+    <#
+    Mode Full: database and log (dbbackup). For a job with Incremental.Enabled
+    the full also renames and restarts the production log (-r), so it becomes
+    the base of the day's incrementals. Mode Incremental: only the current
+    log (-t, no rename): cumulative since the base full. Base = state of the
+    base full (BaseRunId, BaseRecoveryPointUtc) given by the runner.
+    #>
+    param([Collections.IDictionary] $Configuration, $Job, $Runtime, [ValidateSet('Full','Incremental')][string] $Mode = 'Full', $Base)
     $started = [DateTime]::UtcNow
     $connection = Read-DBSqlConnection $Job.CredentialFile
     if ($connection.DBN -cne $Job.Database) { throw "Job $($Job.Id): SQL DBN must match the job Database." }
@@ -96,9 +123,15 @@ function Invoke-DBSqlAnywhere {
     try {
         $connection.ASTART = 'NO'
         Write-DBSqlOption $backupOptions $connection
-        # Default dbbackup copies ALL files; do not add -r, -x, -xo, -n, -s.
+        # Default dbbackup copies ALL files. Never -x, -xo, -n or -s; -r only
+        # for the full of an incremental job, -t only for the incremental.
+        $incrementalJob = [bool] ($Job.PSObject.Properties['Incremental'] -and $Job.Incremental)
+        if ($Mode -eq 'Incremental' -and (-not $incrementalJob -or $null -eq $Base)) { throw "Job $($Job.Id): incremental requires Incremental.Enabled and a base full." }
+        $flags = switch ($Mode) { 'Incremental' { @('-t') } default { if ($incrementalJob) { @('-r') } else { @() } } }
+        $logDirectory = $null
+        if ($incrementalJob) { $logDirectory = Get-DBSqlAnywhereLogDirectory -Configuration $Configuration -OptionsPath $backupOptions }
         $timeout = if ($Configuration.Contains('Execution')) { $Configuration.Execution.ToolTimeoutSeconds } else { 21600 }
-        $backup = Invoke-DBTool -Executable $Configuration.Tools.DbBackup -Arguments @("@$backupOptions", $root) -TimeoutSeconds $timeout
+        $backup = Invoke-DBTool -Executable $Configuration.Tools.DbBackup -Arguments (@("@$backupOptions") + $flags + @($root)) -TimeoutSeconds $timeout
         if ($backup.ExitCode -ne 0) {
             $detail = ConvertTo-DBSafeToolOutput -Text ("$($backup.StdOut) $($backup.StdErr)") -Secret $connection.PWD
             throw "SQL Anywhere backup failed (exit $($backup.ExitCode)). $detail".Trim()
@@ -106,19 +139,26 @@ function Invoke-DBSqlAnywhere {
         # The main database plus any dbspaces are .db files; at least one log.
         $dbs = @(Get-ChildItem -LiteralPath $root -File -Filter '*.db')
         $logs = @(Get-ChildItem -LiteralPath $root -File -Filter '*.log')
-        if ($dbs.Count -lt 1 -or $logs.Count -lt 1) { throw 'Expected at least one .db and one transaction .log in the copied backup.' }
+        if ($Mode -eq 'Incremental') {
+            if ($logs.Count -lt 1 -or $dbs.Count -gt 0) { throw 'Expected only the transaction .log in the incremental backup.' }
+        }
+        elseif ($dbs.Count -lt 1 -or $logs.Count -lt 1) { throw 'Expected at least one .db and one transaction .log in the copied backup.' }
         foreach ($file in @($dbs) + @($logs)) {
             if ($file.Length -eq 0) { throw 'SQL Anywhere produced an empty database or log file.' }
         }
+        $metadata = @{
+            Strategy = $(if ($Mode -eq 'Incremental') { 'native-cumulative-transaction-log' } else { 'native-full-database-and-log' }); Database = $Job.Database
+            Kind = $(if ($Mode -eq 'Incremental') { 'INCREMENTAL' } else { 'FULL' })
+            Validation = 'native-exit-code-and-nonempty-files'; RecoveryValidation = 'external-not-performed'
+            ProductionLogRename = ($Mode -eq 'Full' -and $incrementalJob); ProductionLogTruncate = $false
+            DatabaseFiles = @($dbs | ForEach-Object Name); LogFiles = @($logs | ForEach-Object Name)
+        }
+        if ($logDirectory) { $metadata.ProductionLogDirectory = $logDirectory }
+        if ($Mode -eq 'Incremental') { $metadata.BaseRunId = [string] $Base.BaseRunId; $metadata.BaseRecoveryPointUtc = [string] $Base.BaseRecoveryPointUtc }
         [pscustomobject]@{
-            Status = 'SUCCESS'; Packages = @([pscustomobject]@{ Role = 'FULL'; SourcePath = $root; ContentsOnly = $true })
+            Status = 'SUCCESS'; Packages = @([pscustomobject]@{ Role = $metadata.Kind; SourcePath = $root; ContentsOnly = $true })
             Errors = @(); StartedAtUtc = $started; FinishedAtUtc = [DateTime]::UtcNow
-            Metadata = @{
-                Strategy = 'native-full-database-and-log'; Database = $Job.Database
-                Validation = 'native-exit-code-and-nonempty-files'; RecoveryValidation = 'external-not-performed'
-                ProductionLogRename = $false; ProductionLogTruncate = $false
-                DatabaseFiles = @($dbs.Name); LogFiles = @($logs.Name)
-            }
+            Metadata = $metadata
         }
     }
     finally {

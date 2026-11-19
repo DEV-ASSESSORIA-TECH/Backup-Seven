@@ -40,7 +40,7 @@ function Get-DBScheduleTask {
     foreach ($entry in $Configuration.Schedule.Tasks) {
         if ($entry -isnot [Collections.IDictionary]) { throw 'Schedule entries must be hashtables with explicit Jobs.' }
         foreach ($key in $entry.Keys) {
-            if ($key -notin @('Name','Jobs','At','Frequency','Days','DaysOfMonth','Enabled')) { throw "Unknown schedule key: $key" }
+            if ($key -notin @('Name','Jobs','At','Frequency','Days','DaysOfMonth','Enabled','Mode')) { throw "Unknown schedule key: $key" }
         }
         foreach ($key in @('Name','Jobs','At')) { if (-not $entry.Contains($key)) { throw "Missing schedule field: $key (Schedule.Tasks precisa de Name, Jobs e At)" } }
         Assert-DBIdentifier $entry.Name
@@ -90,10 +90,28 @@ function Get-DBScheduleTask {
             if ($entry.Enabled -isnot [bool]) { throw 'Enabled must be boolean.' }
             $enabled = $entry.Enabled
         }
+        # Mode = 'Incremental' runs the transaction-log backup of jobs with Incremental.Enabled.
+        $mode = if ($entry.Contains('Mode')) { [string] $entry.Mode } else { 'Full' }
+        if ($mode -cnotin @('Full','Incremental')) { throw "Invalid schedule mode: tarefa '$($entry.Name)' (use Mode = 'Full' ou 'Incremental')." }
+        if ($mode -eq 'Incremental') {
+            foreach ($jobId in $taskJobs) {
+                $jobEntry = @($Configuration.Jobs | Where-Object { [string] $_.Id -ceq $jobId })[0]
+                $incremental = if ($jobEntry -is [Collections.IDictionary]) { $jobEntry.Contains('Incremental') -and $jobEntry.Incremental } else { [bool] $jobEntry.Incremental }
+                if ($incremental -is [Collections.IDictionary]) { $incremental = $incremental.Contains('Enabled') -and $incremental.Enabled -eq $true }
+                if (-not $incremental) { throw "Tarefa incremental '$($entry.Name)': o job '$jobId' nao tem Incremental.Enabled (so SQL Anywhere)." }
+            }
+        }
         $registered = Get-DBTaskRegisteredName -InstanceName $Configuration.InstanceName -TaskName $entry.Name
-        $result += [pscustomobject]@{Name=$entry.Name;RegisteredName=$registered;Jobs=$taskJobs;At=$times;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled}
+        $result += [pscustomobject]@{Name=$entry.Name;RegisteredName=$registered;Jobs=$taskJobs;At=$times;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled;Mode=$mode}
     }
     return $result
+}
+
+function Get-DBTaskMode {
+    param($Task)
+    $property = $Task.PSObject.Properties['Mode']
+    if ($null -ne $property -and $property.Value) { return [string] $property.Value }
+    return 'Full'
 }
 
 function Test-DBScheduleRunsOn {
@@ -117,10 +135,11 @@ function Get-DBScheduleMaxGap {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Tasks,
-        [Parameter(Mandatory)][string] $Job
+        [Parameter(Mandatory)][string] $Job,
+        [ValidateSet('Full','Incremental')][string] $Mode = 'Full'
     )
 
-    $covering = @($Tasks | Where-Object { $_.Enabled -and $Job -cin @($_.Jobs) })
+    $covering = @($Tasks | Where-Object { $_.Enabled -and $Job -cin @($_.Jobs) -and (Get-DBTaskMode $_) -eq $Mode })
     if ($covering.Count -eq 0) { return $null }
 
     $start = [DateTime]::new(2026, 1, 1)
@@ -149,10 +168,11 @@ function Get-DBScheduleNextRun {
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Tasks,
         [Parameter(Mandatory)][string] $Job,
-        [Parameter(Mandatory)][DateTime] $After
+        [Parameter(Mandatory)][DateTime] $After,
+        [ValidateSet('Full','Incremental')][string] $Mode = 'Full'
     )
 
-    $covering = @($Tasks | Where-Object { $_.Enabled -and $Job -cin @($_.Jobs) })
+    $covering = @($Tasks | Where-Object { $_.Enabled -and $Job -cin @($_.Jobs) -and (Get-DBTaskMode $_) -eq $Mode })
     if ($covering.Count -eq 0) { return $null }
 
     $next = $null
@@ -194,7 +214,7 @@ function Get-DBTaskDefinition {
         [ValidateRange(1, 72)][int] $ExecutionLimitHours = 12
     )
 
-    $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -ConfigPath `"$ConfigPath`" -Job $(@($Task.Jobs) -join ',')"
+    $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$ScriptPath`" -ConfigPath `"$ConfigPath`" -Job $(@($Task.Jobs) -join ',')$(if ((Get-DBTaskMode $Task) -eq 'Incremental') { ' -Mode Incremental' })"
     $schedule = switch ($Task.Frequency) {
         'Daily' { '<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>' }
         'Weekly' {

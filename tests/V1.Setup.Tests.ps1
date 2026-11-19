@@ -171,7 +171,7 @@ Describe 'Guided setup 2.0' {
         function New-AnswerSet([Collections.Specialized.OrderedDictionary] $Extra) {
             $base=[ordered]@{
                 'Executavel 7z.exe*'=(Join-Path $script:Tools '7z.exe'); 'Executavel age.exe*'=(Join-Path $script:Tools 'age.exe'); 'Executavel rclone.exe*'=(Join-Path $script:Tools 'rclone.exe')
-                'Executavel mysql.exe*'=(Join-Path $script:Tools 'mysql.exe'); 'Executavel mysqldump.exe*'=(Join-Path $script:Tools 'mysqldump.exe'); 'Executavel dbbackup.exe*'=(Join-Path $script:Tools 'dbbackup.exe')
+                'Executavel mysql.exe*'=(Join-Path $script:Tools 'mysql.exe'); 'Executavel mysqldump.exe*'=(Join-Path $script:Tools 'mysqldump.exe'); 'Pasta das ferramentas do SQL Anywhere*'=$script:Tools
                 'Provedor S3*'='AWS'; 'Access key ID*'='AKIDTEST'; 'Regiao*'=''; 'Destinatarios age*'=$script:Age
             }
             # Returned, not assigned here: a function's $script: scope is not the
@@ -265,17 +265,32 @@ Describe 'Guided setup 2.0' {
         $c=Read-DBConfiguration $path
         @($c.Jobs.Id) | Should -Be @('dominio','arquivos')
         (Read-DBSqlConnection $c.Jobs[0].CredentialFile).SERVER | Should -Be 'srv_dominio'
-        @(Get-DBScheduleTask $c).Count | Should -Be 2
+        # Incremental is offered (default yes) for SQL Anywhere: 09/12/15/18 plus the full.
+        $tasks=@(Get-DBScheduleTask $c)
+        $tasks.Count | Should -Be 3
+        $incremental=@($tasks | Where-Object Mode -EQ 'Incremental')
+        @($incremental.At) | Should -Be @('09:00','12:00','15:00','18:00')
+        @($incremental.Jobs) | Should -Be @('dominio')
+        $c.Jobs[0].Incremental | Should -BeTrue
+        Test-Path (Join-Path (Split-Path -Parent $script:Instances) 'ambiente.psd1') | Should -BeTrue
         @($script:Prompts | Where-Object { $_ -like 'Adicionar backup de diretorio*' }).Count | Should -Be 1
     }
     It 'reapplies an existing 2.0 instance without asking anything else' {
         $instance=Join-Path $script:Instances 'assessoria'
         $null=New-Item -ItemType Directory (Join-Path $instance 'Secrets') -Force
-        Set-Content (Join-Path $instance 'config.psd1') (Get-DBTestConfigText -RemoteRoot 's3:bucket-x/ASSESSORIA' -InstanceName 'assessoria')
+        $tools=@{}
+        foreach ($entry in @{ MySql='mysql.exe'; MySqlDump='mysqldump.exe'; SevenZip='7z.exe'; Age='age.exe'; Rclone='rclone.exe' }.GetEnumerator()) { $tools[$entry.Key]=Join-Path $script:Tools $entry.Value }
+        Set-Content (Join-Path $instance 'config.psd1') (Get-DBTestConfigText -Tools $tools -RemoteRoot 's3:bucket-x/ASSESSORIA' -InstanceName 'assessoria')
+        Remove-Item (Join-Path (Split-Path -Parent $script:Instances) 'ambiente.psd1') -ErrorAction SilentlyContinue
         $script:Answers=New-AnswerSet ([ordered]@{ 'A instancia assessoria ja existe*'='' })
         $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
         $path | Should -Be (Join-Path $instance 'config.psd1')
         $script:Prompts.Count | Should -Be 1
+        # A 2.1 instance hands its Tools over to the server environment.
+        $environment=Import-PowerShellDataFile (Join-Path (Split-Path -Parent $script:Instances) 'ambiente.psd1')
+        $environment.Tools.Rclone | Should -Be $tools.Rclone
+        (Import-PowerShellDataFile $path).Contains('Tools') | Should -BeFalse
+        (Read-DBConfiguration $path).Tools.SevenZip | Should -Be $tools.SevenZip
     }
     It 'refuses a job destination already used by another instance' {
         $other=Join-Path $script:Instances 'outra'

@@ -4,8 +4,10 @@ param([string] $ConfigPath, [string] $InstanceName,
     # <root>\Instances beside the App folder (<root>\App\Setup.ps1).
     [string] $InstancesRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Instances'),
     [switch] $Apply, [switch] $Plan,
-    # Editar-Configuracao.bat: open config.psd1 elevated, validate, then apply.
-    [switch] $Edit)
+    # Menu (Editar): open config.psd1 elevated, validate, then apply.
+    [switch] $Edit,
+    # Menu (Ambiente): edit <root>\ambiente.psd1, validate, reapply every instance.
+    [switch] $Environment)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Setup.psm1') -Force
@@ -16,12 +18,22 @@ Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Schedule.psm1')
 # tells the operator that nothing needs to be typed again.
 $savedConfigPath = $null
 try {
-    if (@($Apply, $Plan, $Edit | Where-Object { $_ }).Count -gt 1) { throw 'Choose -Apply, -Plan or -Edit.' }
+    if (@($Apply, $Plan, $Edit, $Environment | Where-Object { $_ }).Count -gt 1) { throw 'Choose -Apply, -Plan, -Edit or -Environment.' }
     $InstancesRoot = [IO.Path]::GetFullPath($InstancesRoot)
     if (-not $Plan) {
         if (-not $IsWindows) { throw 'DBBackup setup requires Windows.' }
         $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Execute setup as Administrator.' }
+    }
+    if ($Environment) {
+        if (-not (Edit-DBEnvironment -InstancesRoot $InstancesRoot -TemplateRoot (Join-Path $PSScriptRoot 'Templates'))) { exit 0 }
+        $code = 0
+        foreach ($config in @(Get-ChildItem -Path (Join-Path $InstancesRoot '*/config.psd1') -File -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+            "`n== Aplicando $($config.FullName)" | Out-Host
+            & (Get-Process -Id $PID).Path -NoLogo -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Apply -ConfigPath $config.FullName -InstancesRoot $InstancesRoot
+            if ($LASTEXITCODE -ne 0) { $code = $LASTEXITCODE }
+        }
+        exit $code
     }
     if ($Apply -or $Plan -or $Edit) {
         if (-not $ConfigPath) { $ConfigPath = Select-DBConfigPath $InstancesRoot }
@@ -66,7 +78,7 @@ catch {
         @(
             ''
             "A configuracao e as credenciais ja estao salvas em $(Split-Path -Parent $savedConfigPath)."
-            'Corrija o problema acima e rode Aplicar-Configuracao.bat informando este arquivo (nada sera perguntado de novo):'
+            'Corrija o problema acima e rode Aplicar no menu (DBBackup.bat, opcao 3) informando este arquivo (nada sera perguntado de novo):'
             "  $savedConfigPath"
         ) | Out-Host
     }

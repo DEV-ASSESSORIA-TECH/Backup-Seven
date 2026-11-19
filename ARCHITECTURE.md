@@ -68,6 +68,11 @@ restritos a SYSTEM e Administradores; não entram nos argumentos dos processos.
 Alterar código compartilhado afeta a próxima execução de todas as instâncias que
 o usam. Atualize com os trabalhos parados e preserve o estado operacional.
 A distribuição é uma lista explícita de fontes com checksum do ZIP; na raiz,
-apenas lançadores e LEIA-ME. Configurações 1.x e a linha 0.x não são importadas
+apenas `DBBackup.bat` (menu que roda cada script de `App\` num processo
+separado) e LEIA-ME. Ferramentas e padrões do servidor ficam em
+`ambiente.psd1`, mesclado na leitura de cada configuração (instância > ambiente >
+padrão). O incremental acumulado do SQL Anywhere (`dbbackup -r` no completo,
+`-t` no incremental) guarda a base em `Runtime\Incremental`; a retenção local
+e a limpeza dos logs renomeados dependem dessa base. Configurações 1.x e a linha 0.x não são importadas
 nem desativadas automaticamente. Recovery e testes de
 restauração não integram runtime, setup, agendador ou workflow de release.

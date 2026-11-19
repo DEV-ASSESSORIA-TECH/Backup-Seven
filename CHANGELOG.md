@@ -4,6 +4,53 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [2.2.0] - 2026-11-19
+
+### Adicionado
+
+- `DBBackup.bat`: lançador único com menu (nova instância, editar, aplicar,
+  diagnosticar, executar backup, últimos resultados, ambiente, atualizar,
+  configurações versionadas). Cada opção roda o script em um processo separado e
+  volta ao menu. Arrastar um ZIP sobre ele atualiza sem internet.
+- `ambiente.psd1` na raiz da instalação: ferramentas (`SqlAnywhere` é a pasta
+  `...\Tools` ou `...\Bin64`), `Execution`, `Archive`, `Retention` e a pasta
+  textfile do Alloy valem para todas as instâncias. Precedência: instância >
+  ambiente > padrão interno. O primeiro setup cria o arquivo e as instâncias
+  seguintes não perguntam caminhos. Uma instância 2.0/2.1 entrega suas
+  ferramentas ao ambiente na primeira passagem pelo setup. A opção 7 do menu
+  edita, valida e reaplica.
+- Backup incremental acumulado do SQL Anywhere: job
+  `Incremental = @{ Enabled = $true; KeepRenamedLogDays = 3 }` e tarefas com
+  `Mode = 'Incremental'`. O completo usa `dbbackup -r` e vira a base; o
+  incremental usa `dbbackup -t` (log desde a base), com o sufixo `_INCREMENTAL`,
+  e vai para `<RemoteRoot>/<job>/incremental/`. Sem base, o incremental é
+  promovido a completo. Os logs renomeados (`AAMMDDxx.log`) são apagados após o
+  completo confirmado e `KeepRenamedLogDays`. O setup pergunta o incremental
+  (padrão `09:00,12:00,15:00,18:00`) e o horário do completo.
+- Monitoramento do incremental: `backup_id` `<id>-log`, `kind="log"`, com prazo
+  pelos horários incrementais.
+- Diagnóstico: avisa quando falta o ambiente, o `dbping.exe`, a base do
+  incremental, a pasta do log de produção ou a tarefa incremental.
+- Menu: puxar as configurações do servidor de `configuracoes/<servidor>/` (main
+  do GitHub). Mostra a diferença, guarda `<arquivo>.anterior`, valida e desfaz
+  tudo se algo ficar inválido, e oferece aplicar. Também exporta as
+  configurações para commit. Secrets nunca entram.
+
+### Alterado
+
+- Retenção local: além de `CompletedDays` (7), os incrementais saem quando a
+  base deles é mais antiga que o completo anterior. Um completo que falha não
+  apaga nada novo.
+- `config.psd1` não precisa mais de `Tools`, `Execution`, `Archive` e
+  `Retention`; o modelo foi reescrito.
+
+### Removido
+
+- `Setup.bat`, `Editar-Configuracao.bat`, `Aplicar-Configuracao.bat`,
+  `Diagnosticar.bat`, `Executar-Backup.bat` e `Atualizar.bat` (substituídos pelo
+  menu). O updater da 2.1 não aceita o pacote 2.2, por isso a atualização
+  2.1 → 2.2 é manual: veja o RUNBOOK.
+
 ## [2.1.0] - 2026-11-18
 
 ### Adicionado

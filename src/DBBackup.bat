@@ -1,7 +1,7 @@
 @echo off
 setlocal
-rem Atualiza o DBBackup para a ultima versao publicada no GitHub.
-rem Sem internet: arraste o DBBackup-X.Y.Z.zip (com o .sha256 ao lado) sobre este arquivo.
+rem DBBackup - menu de operacao. Arraste um DBBackup-X.Y.Z.zip (com o .sha256
+rem ao lado) sobre este arquivo para atualizar sem internet.
 set "DBBACKUP_PACKAGE=%~1"
 net session >nul 2>&1
 if errorlevel 1 (
@@ -18,19 +18,26 @@ if not defined PWSH (
     pause
     exit /b 1
 )
+title DBBackup
+if defined DBBACKUP_PACKAGE goto update
+"%PWSH%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0App\Menu.ps1" -InstallRoot "%~dp0."
+if not "%ERRORLEVEL%"=="10" exit /b 0
+:update
 if not exist "%~dp0App\Update.ps1" (
     echo App\Update.ps1 nao encontrado ao lado deste arquivo.
     pause
     exit /b 1
 )
-title DBBackup - Atualizacao
 set "DBBACKUP_UPDATER=%TEMP%\DBBackup-Update-%RANDOM%%RANDOM%.ps1"
 rem A atualizacao substitui este .bat. O bloco abaixo e lido inteiro pelo cmd
-rem antes de executar, entao a troca do arquivo nao interfere na execucao.
+rem antes de executar, entao a troca do arquivo nao interfere; no fim o menu
+rem novo e aberto com call.
 (
     copy /y "%~dp0App\Update.ps1" "%DBBACKUP_UPDATER%" >nul
     "%PWSH%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%DBBACKUP_UPDATER%" -InstallRoot "%~dp0." -PackagePath "%DBBACKUP_PACKAGE%"
     del /q "%DBBACKUP_UPDATER%" >nul 2>&1
     pause
+    set "DBBACKUP_PACKAGE="
+    call "%~f0"
     exit /b
 )

@@ -1,5 +1,5 @@
 Set-StrictMode -Version Latest
-foreach ($name in @('Configuration','Runtime','Artifacts','Schedule','Capacity','Encryption','Storage','Process')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
+foreach ($name in @('Configuration','Runtime','Artifacts','Schedule','Capacity','Encryption','Storage','Process','Incremental')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
 Import-Module (Join-Path $PSScriptRoot '../Providers/SQLAnywhere/SQLAnywhere.psm1')
 
 function ConvertTo-DBDataLiteral {
@@ -32,7 +32,7 @@ function Set-DBPrivateFile {
 function Test-DBPrivateAcl {
     param([string] $Path)
     if (-not $IsWindows) { throw 'DBBackup setup requires Windows NTFS ACLs.' }
-    if (-not (Test-DBPrivateAccess $Path)) { throw "Private path grants access beyond SYSTEM and Administrators: $Path. Run Aplicar-Configuracao.bat (Setup.ps1 -Apply)." }
+    if (-not (Test-DBPrivateAccess $Path)) { throw "Private path grants access beyond SYSTEM and Administrators: $Path. Use the menu (DBBackup.bat, Aplicar) or Setup.ps1 -Apply." }
 }
 
 function Write-DBSetupMessage {
@@ -88,10 +88,16 @@ function Find-DBToolCandidate {
     $patterns = switch ($Key) {
         'MySql' { $programFiles | ForEach-Object { Join-Path $_ 'MySQL\MySQL Server *\bin\mysql.exe' } }
         'MySqlDump' { $programFiles | ForEach-Object { Join-Path $_ 'MySQL\MySQL Server *\bin\mysqldump.exe' } }
-        'DbBackup' { $programFiles | ForEach-Object { Join-Path $_ 'SQL Anywhere *\Bin64\dbbackup.exe' } }
+        # Reduced installations get a Tools folder; a full one has Bin64.
+        'SqlAnywhere' { foreach ($folder in @('Tools','Bin64')) { $programFiles | ForEach-Object { Join-Path $_ "SQL Anywhere *\$folder\dbbackup.exe" } } }
         default { @() }
     }
     foreach ($pattern in $patterns) {
+        if ($Key -eq 'SqlAnywhere') {
+            $found = @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)
+            if ($found.Count -gt 0) { return $found[0].DirectoryName }
+            continue
+        }
         $found = @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)
         if ($found.Count -gt 0) { return $found[0].FullName }
     }
@@ -176,7 +182,20 @@ function Test-DBInstance {
     }
     $null = Assert-DBBackupDependency -Configuration $Configuration -Jobs $Configuration.Jobs
     if (-not $Configuration.Monitoring.Enabled -and (Test-Path -LiteralPath 'C:\ProgramData\GrafanaLabs\Alloy\textfile' -PathType Container)) {
-        Write-Warning 'O Grafana Alloy esta instalado, mas esta instancia nao publica metricas (Monitoring.Enabled = $false). Ative com Editar-Configuracao.bat.'
+        Write-Warning 'O Grafana Alloy esta instalado, mas esta instancia nao publica metricas (Monitoring.Enabled = $false). Ative pelo menu (DBBackup.bat, Editar configuracao).'
+    }
+    if (-not (Test-Path -LiteralPath $Configuration.EnvironmentPath -PathType Leaf)) {
+        Write-Warning "Ambiente do servidor nao encontrado ($($Configuration.EnvironmentPath)); ferramentas vem da propria instancia. Rode o menu, opcao 1, para cria-lo."
+    }
+    foreach ($job in @($Configuration.Jobs | Where-Object { $_.Provider -eq 'SQLAnywhere' })) {
+        $dbping = Join-Path (Split-Path -Parent $Configuration.Tools.DbBackup) 'dbping.exe'
+        if (-not (Test-Path -LiteralPath $dbping -PathType Leaf)) { Write-Warning "dbping.exe nao esta na pasta do dbbackup.exe ($(Split-Path -Parent $Configuration.Tools.DbBackup)): sem estimativa de tamanho nem limpeza dos logs renomeados." }
+        if (-not $job.Incremental) { continue }
+        $base = Read-DBIncrementalBase $Configuration $job.Id
+        if ($null -eq $base) { Write-Warning "Job $($job.Id): incremental sem backup completo de base; o proximo incremental sera promovido a completo." }
+        elseif (-not $base.ProductionLogDirectory) { Write-Warning "Job $($job.Id): pasta do log de producao desconhecida; os logs renomeados (AAMMDDxx.log) nao serao limpos." }
+        $incrementalTasks = @(Get-DBScheduleTask $Configuration | Where-Object { $_.Mode -eq 'Incremental' -and $job.Id -cin @($_.Jobs) })
+        if (-not $incrementalTasks.Count) { Write-Warning "Job $($job.Id): Incremental.Enabled sem tarefa Mode = 'Incremental' na agenda." }
     }
     foreach ($path in $Configuration.Paths.Values) { Assert-DBFreeSpace -Path $path -RequiredBytes 0 -ReserveBytes $Configuration.Execution.ReserveBytes }
     [pscustomobject]@{Instance=$Configuration.InstanceName;Jobs=@($Configuration.Jobs.Id);Status='LOCAL_CHECKS_OK';RemoteDatabaseChecked=$false}
@@ -273,22 +292,77 @@ function Initialize-DBSharedSecret {
     }
 }
 
+function Test-DBToolPath {
+    <# Tools.SqlAnywhere is a folder holding dbbackup.exe; every other tool is an executable file. #>
+    param([string] $Key, [AllowNull()][string] $Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if ($Key -eq 'SqlAnywhere') { return (Test-Path -LiteralPath (Join-Path $Value 'dbbackup.exe') -PathType Leaf) }
+    return (Test-Path -LiteralPath $Value -PathType Leaf)
+}
+
 function Read-DBToolPath {
-    <# Asks a tool path (suggesting an installed one) until the file exists. #>
-    param([Collections.IDictionary] $Tools, [string] $Key)
+    <#
+    Asks a tool path (suggesting an installed one) until it exists. With
+    -IfMissing a valid configured path is kept without asking, so only the
+    first setup of a server asks for tools.
+    #>
+    param([Collections.IDictionary] $Tools, [string] $Key, [switch] $IfMissing)
     $labels = @{
-        MySql = 'Executavel mysql.exe'; MySqlDump = 'Executavel mysqldump.exe'; DbBackup = 'Executavel dbbackup.exe (SQL Anywhere)'
+        MySql = 'Executavel mysql.exe'; MySqlDump = 'Executavel mysqldump.exe'
+        SqlAnywhere = 'Pasta das ferramentas do SQL Anywhere com dbbackup.exe e dbping.exe (...\Tools ou ...\Bin64)'
         SevenZip = 'Executavel 7z.exe'; Age = 'Executavel age.exe'; Rclone = 'Executavel rclone.exe'
     }
     $default = if ($Tools.Contains($Key)) { [string] $Tools[$Key] } else { '' }
-    if (-not $default -or -not (Test-Path -LiteralPath $default -PathType Leaf)) {
+    if ($IfMissing -and (Test-DBToolPath $Key $default)) { return }
+    if (-not (Test-DBToolPath $Key $default)) {
         $candidate = Find-DBToolCandidate $Key
         if ($candidate) { $default = $candidate }
     }
     $Tools[$Key] = Read-DBRequiredValue $labels[$Key] $default {
         param($value)
-        if (-not (Test-Path -LiteralPath $value -PathType Leaf)) { throw "Arquivo nao encontrado: $value" }
+        if (-not (Test-DBToolPath $Key $value)) { throw $(if ($Key -eq 'SqlAnywhere') { "dbbackup.exe nao encontrado em $value" } else { "Arquivo nao encontrado: $value" }) }
     }
+}
+
+function Save-DBEnvironment {
+    <# Writes <root>\ambiente.psd1 atomically after validating it. #>
+    param([Collections.IDictionary] $Environment, [string] $Path)
+    $temp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $header = "# DBBackup - ambiente do servidor: ferramentas e padroes de todas as instancias. Alterar pelo menu (DBBackup.bat, opcao 7).`n"
+        Set-Content -LiteralPath $temp -Value ($header + (ConvertTo-DBDataLiteral $Environment)) -Encoding utf8
+        $null = Read-DBEnvironment $temp
+        [IO.File]::Move($temp, $Path, $true)
+    }
+    finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
+}
+
+function Get-DBSetupEnvironment {
+    <#
+    The server environment used by the setup: ambiente.psd1 when it exists,
+    otherwise the template. An instance created before 2.2 hands over its
+    Tools, Execution, Archive and Retention to a new ambiente.psd1.
+    #>
+    param([string] $Path, [string] $TemplateRoot, [Collections.IDictionary] $InstanceData)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) { return @{ Data = (Import-PowerShellDataFile -LiteralPath $Path); Created = $false } }
+    $environment = Import-PowerShellDataFile -LiteralPath (Join-Path $TemplateRoot 'ambiente.example.psd1')
+    $environment.Tools = @{}
+    if ($null -ne $InstanceData) {
+        foreach ($section in @('Tools','Execution','Archive','Retention')) {
+            if (-not $InstanceData.Contains($section) -or $InstanceData[$section] -isnot [Collections.IDictionary]) { continue }
+            foreach ($key in $InstanceData[$section].Keys) { $environment[$section][$key] = $InstanceData[$section][$key] }
+            $InstanceData.Remove($section)
+        }
+        if ($environment.Tools.Contains('DbBackup')) {
+            $environment.Tools.SqlAnywhere = Split-Path -Parent ([string] $environment.Tools.DbBackup)
+            $environment.Tools.Remove('DbBackup')
+        }
+        if ($InstanceData.Contains('Monitoring') -and $InstanceData.Monitoring -is [Collections.IDictionary] -and $InstanceData.Monitoring.Contains('TextfileDirectory')) {
+            $environment.Monitoring.TextfileDirectory = $InstanceData.Monitoring.TextfileDirectory
+            $InstanceData.Monitoring.Remove('TextfileDirectory')
+        }
+    }
+    return @{ Data = $environment; Created = $true }
 }
 
 function Find-DBCredentialCandidate {
@@ -361,18 +435,19 @@ function Read-DBDestination {
 
 function Read-DBJob {
     <#
-    Asks one job of the given provider and returns @{ Job = <hashtable>; At = @('HH:mm', ...) }.
-    Database credentials found in Secrets are offered before asking new ones.
+    Asks one job of the given provider and returns @{ Job = <hashtable>; At = @('HH:mm', ...);
+    IncrementalAt = @(...) }. Database credentials found in Secrets are offered
+    before asking new ones. Missing tools are asked into the environment Tools.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'InstanceRoot', Justification = 'Read by the SourcePath validation scriptblock.')]
     [CmdletBinding()]
-    param([string] $Provider, [Collections.IDictionary] $Data, [string] $SecretsRoot, [string] $InstanceRoot, [string[]] $UsedIds,
+    param([string] $Provider, [Collections.IDictionary] $Tools, [string] $SecretsRoot, [string] $InstanceRoot, [string[]] $UsedIds,
         [string[]] $AssignedSecretFiles, [string] $RemoteName, [string] $DefaultBucket, [string] $DefaultPrefix)
     $job = [ordered]@{ Provider = $Provider }
     $credential = $null
     if ($Provider -in @('MySQL','SQLAnywhere')) {
-        if ($Provider -eq 'MySQL') { foreach ($key in @('MySql','MySqlDump')) { if (-not $Data.Tools.Contains($key) -or -not (Test-Path -LiteralPath $Data.Tools[$key] -PathType Leaf)) { Read-DBToolPath $Data.Tools $key } } }
-        elseif (-not $Data.Tools.Contains('DbBackup') -or -not (Test-Path -LiteralPath $Data.Tools.DbBackup -PathType Leaf)) { Read-DBToolPath $Data.Tools 'DbBackup' }
+        if ($Provider -eq 'MySQL') { foreach ($key in @('MySql','MySqlDump')) { Read-DBToolPath $Tools $key -IfMissing } }
+        elseif (-not ($Tools.Contains('DbBackup') -and (Test-Path -LiteralPath $Tools.DbBackup -PathType Leaf))) { Read-DBToolPath $Tools 'SqlAnywhere' -IfMissing }
         $kind = if ($Provider -eq 'MySQL') { 'credencial MySQL' } else { 'conexao SQL Anywhere' }
         foreach ($candidate in Find-DBCredentialCandidate $SecretsRoot $Provider $AssignedSecretFiles) {
             if (Read-DBConfirmation "Encontrado Secrets\$(Split-Path -Leaf $candidate) ($kind). Usar neste job?" $true) { $credential = $candidate; break }
@@ -419,12 +494,18 @@ function Read-DBJob {
         if ($Provider -eq 'MySQL') { $job.ExtraArguments = @('--skip-events') }
     }
     $job.RemoteRoot = Read-DBDestination -RemoteName $RemoteName -DefaultBucket $DefaultBucket -DefaultPrefix $DefaultPrefix -JobId $job.Id
-    $times = Read-DBRequiredValue 'Horarios diarios deste job (HH:mm; varios separados por virgula, ex.: 12:30,19:00)' '19:00' {
+    $timeCheck = {
         param($value)
         $list = @(ConvertTo-DBTimeList $value)
         if (-not $list.Count) { throw 'Informe ao menos um horario.' }
     }
-    return @{ Job = $job; At = @(ConvertTo-DBTimeList $times); Credential = $credential }
+    $incrementalAt = @()
+    if ($Provider -eq 'SQLAnywhere' -and (Read-DBConfirmation 'Ativar backup incremental (log de transacoes acumulado desde o completo)? Desative o backup do agente Dominio antes.' $true)) {
+        $job.Incremental = @{ Enabled = $true; KeepRenamedLogDays = 3 }
+        $incrementalAt = @(ConvertTo-DBTimeList (Read-DBRequiredValue 'Horarios dos incrementais (HH:mm, separados por virgula)' '09:00,12:00,15:00,18:00' $timeCheck))
+    }
+    $times = Read-DBRequiredValue 'Horarios diarios do backup completo deste job (HH:mm; varios separados por virgula, ex.: 12:30,19:00)' '19:00' $timeCheck
+    return @{ Job = $job; At = @(ConvertTo-DBTimeList $times); IncrementalAt = $incrementalAt; Credential = $credential }
 }
 
 function ConvertTo-DBTimeList {
@@ -437,23 +518,27 @@ function ConvertTo-DBTimeList {
 
 function Add-DBScheduledJob {
     <#
-    Puts a job in the daily task with exactly its times (diario-HHmm or
-    diario-HHmm-HHmm...), creating the task when needed. One time is saved as
-    At = 'HH:mm', several as At = @('HH:mm', ...).
+    Puts a job in the daily task with exactly its times and mode (diario-HHmm,
+    diario-HHmm-HHmm... or incremental-HHmm-...), creating the task when
+    needed. One time is saved as At = 'HH:mm', several as At = @('HH:mm', ...).
     #>
-    param([Collections.IDictionary] $Data, [string] $JobId, [string[]] $At)
+    param([Collections.IDictionary] $Data, [string] $JobId, [string[]] $At, [ValidateSet('Full','Incremental')][string] $Mode = 'Full')
     if (-not $Data.Contains('Schedule') -or $Data.Schedule -isnot [Collections.IDictionary]) { $Data.Schedule = @{ Tasks = @() } }
     $times = @($At | Sort-Object -Unique)
     $key = $times -join ','
     $tasks = @($Data.Schedule.Tasks)
     $match = @($tasks | Where-Object {
         $_ -is [Collections.IDictionary] -and (@($_.At | ForEach-Object { [string] $_ } | Sort-Object -Unique) -join ',') -eq $key -and
-        (-not $_.Contains('Frequency') -or $_.Frequency -ceq 'Daily')
+        (-not $_.Contains('Frequency') -or $_.Frequency -ceq 'Daily') -and
+        $(if ($_.Contains('Mode')) { [string] $_.Mode } else { 'Full' }) -ceq $Mode
     })
     if ($match.Count -gt 0) { $match[0].Jobs = @($match[0].Jobs) + $JobId }
     else {
         $value = if ($times.Count -eq 1) { $times[0] } else { $times }
-        $tasks += @{ Name = 'diario-' + (($times | ForEach-Object { $_.Replace(':', '') }) -join '-'); Jobs = @($JobId); At = $value; Frequency = 'Daily'; Enabled = $true }
+        $prefix = if ($Mode -eq 'Incremental') { 'incremental-' } else { 'diario-' }
+        $task = @{ Name = $prefix + (($times | ForEach-Object { $_.Replace(':', '') }) -join '-'); Jobs = @($JobId); At = $value; Frequency = 'Daily'; Enabled = $true }
+        if ($Mode -eq 'Incremental') { $task.Mode = 'Incremental' }
+        $tasks += $task
     }
     $Data.Schedule.Tasks = $tasks
 }
@@ -465,7 +550,7 @@ function Save-DBConfigurationData {
     $null = New-Item -ItemType Directory -Path $directory -Force
     $temp = Join-Path $directory "config-$([guid]::NewGuid().ToString('N')).tmp.psd1"
     try {
-        $header = "# DBBackup 2.0 - instancia $($Data.InstanceName). Gerado pelo Setup; pode ser editado e reaplicado com Aplicar-Configuracao.bat.`n"
+        $header = "# DBBackup - instancia $($Data.InstanceName). Gerado pelo Setup; editar e aplicar pelo menu (DBBackup.bat).`n"
         Set-Content -LiteralPath $temp -Value ($header + (ConvertTo-DBDataLiteral $Data)) -Encoding utf8
         $candidate = Read-DBConfiguration $temp
         if ($InstancesRoot) {
@@ -487,15 +572,18 @@ function Read-DBMonitoring {
     dominio); a backup_id per job keeps the series of an earlier version when
     reused (e.g. 'database' and 'fiscal' of backup-seven 0.6).
     #>
-    param([Collections.IDictionary] $Data, [string] $InstanceName)
+    param([Collections.IDictionary] $Data, [string] $InstanceName, [Collections.IDictionary] $Environment)
     if (-not $Data.Contains('Monitoring') -or $Data.Monitoring -isnot [Collections.IDictionary]) { $Data.Monitoring = @{ Enabled = $false } }
     $m = $Data.Monitoring
-    if (-not $m.Contains('TextfileDirectory') -or -not $m.TextfileDirectory) { $m.TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup' }
-    $alloy = Test-Path -LiteralPath $m.TextfileDirectory -PathType Container
+    if ($null -eq $Environment) { $Environment = @{} }
+    if (-not $Environment.Contains('Monitoring') -or $Environment.Monitoring -isnot [Collections.IDictionary]) { $Environment.Monitoring = @{} }
+    $e = $Environment.Monitoring
+    if (-not $e.Contains('TextfileDirectory') -or -not $e.TextfileDirectory) { $e.TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup' }
+    $alloy = Test-Path -LiteralPath $e.TextfileDirectory -PathType Container
     $default = [bool] ($m.Contains('Enabled') -and $m.Enabled -eq $true) -or $alloy
     if (-not (Read-DBConfirmation 'Publicar metricas dos backups para o Grafana Alloy?' $default)) { $m.Enabled = $false; return }
     $m.Enabled = $true
-    $m.TextfileDirectory = Read-DBRequiredValue 'Pasta textfile do Alloy' $m.TextfileDirectory {
+    $e.TextfileDirectory = Read-DBRequiredValue 'Pasta textfile do Alloy (ambiente do servidor)' $e.TextfileDirectory {
         param($value)
         if (-not [IO.Path]::IsPathFullyQualified($value)) { throw 'Informe o caminho completo.' }
     }
@@ -506,6 +594,7 @@ function Read-DBMonitoring {
     foreach ($job in @($Data.Jobs)) {
         $current = if ($m.BackupIds.Contains($job.Id)) { [string] $m.BackupIds[$job.Id] } else { "$($InstanceName.ToLowerInvariant())-$(([string] $job.Id).ToLowerInvariant())" }
         $m.BackupIds[$job.Id] = Read-DBRequiredValue "backup_id do job $($job.Id) no Grafana (reuse o da versao anterior para manter o historico)" $current $identifier
+        if ($job.Contains('Incremental') -and $job.Incremental.Enabled) { Write-DBSetupMessage "Incrementais do job $($job.Id) publicam backup_id $($m.BackupIds[$job.Id])-log (kind=log)." }
     }
 }
 
@@ -530,6 +619,17 @@ function Invoke-DBInteractiveSetup {
         $existing = Import-PowerShellDataFile -LiteralPath $configPath
         if ($existing.SchemaVersion -eq 2) {
             $null = Read-DBConfiguration $configPath
+            $environmentPath = Get-DBEnvironmentPath $instanceRoot
+            if (-not (Test-Path -LiteralPath $environmentPath -PathType Leaf)) {
+                # 2.0/2.1 instance: its Tools and defaults become the server environment.
+                $moved = Get-DBSetupEnvironment -Path $environmentPath -TemplateRoot $TemplateRoot -InstanceData $existing
+                foreach ($key in @('SevenZip','Age','Rclone')) { Read-DBToolPath $moved.Data.Tools $key -IfMissing }
+                if (@($existing.Jobs | Where-Object { $_.Provider -eq 'MySQL' }).Count) { foreach ($key in @('MySql','MySqlDump')) { Read-DBToolPath $moved.Data.Tools $key -IfMissing } }
+                if (@($existing.Jobs | Where-Object { $_.Provider -eq 'SQLAnywhere' }).Count) { Read-DBToolPath $moved.Data.Tools 'SqlAnywhere' -IfMissing }
+                Save-DBEnvironment $moved.Data $environmentPath
+                Save-DBConfigurationData $existing $configPath $InstancesRoot
+                Write-DBSetupMessage "Ferramentas e padroes da instancia movidos para $environmentPath."
+            }
             if (-not (Read-DBConfirmation "A instancia $InstanceName ja existe. Adicionar jobs a ela? (Nao = apenas reaplicar)" $false)) { return $configPath }
             $data = $existing
         }
@@ -549,7 +649,13 @@ function Invoke-DBInteractiveSetup {
     Set-DBPrivateDirectory $secretsRoot -Force
     Restore-DBInheritedAccess $instanceRoot
 
-    foreach ($key in @('SevenZip','Age','Rclone')) { Read-DBToolPath $data.Tools $key }
+    # Tools and defaults of the server live in <root>\ambiente.psd1: asked once.
+    $environmentPath = Get-DBEnvironmentPath $instanceRoot
+    $setupEnvironment = Get-DBSetupEnvironment -Path $environmentPath -TemplateRoot $TemplateRoot -InstanceData $data
+    $environment = $setupEnvironment.Data
+    if ($setupEnvironment.Created) { Write-DBSetupMessage "Primeira configuracao deste servidor: ferramentas e padroes vao para $environmentPath." }
+    if (-not $environment.Contains('Tools') -or $environment.Tools -isnot [Collections.IDictionary]) { $environment.Tools = @{} }
+    foreach ($key in @('SevenZip','Age','Rclone')) { Read-DBToolPath $environment.Tools $key -IfMissing }
     Initialize-DBSharedSecret $secretsRoot
     $remoteName = Get-DBRcloneRemoteName (Join-Path $secretsRoot 'rclone.conf')
 
@@ -575,7 +681,7 @@ function Invoke-DBInteractiveSetup {
             else { break }
         }
         if (-not $providers.ContainsKey($choice)) { Write-Warning 'Opcao invalida.'; continue }
-        $answer = Read-DBJob -Provider $providers[$choice] -Data $data -SecretsRoot $secretsRoot -InstanceRoot $instanceRoot -UsedIds @($jobs | ForEach-Object { [string] $_.Id }) `
+        $answer = Read-DBJob -Provider $providers[$choice] -Tools $environment.Tools -SecretsRoot $secretsRoot -InstanceRoot $instanceRoot -UsedIds @($jobs | ForEach-Object { [string] $_.Id }) `
             -AssignedSecretFiles $assigned -RemoteName $remoteName -DefaultBucket $lastBucket -DefaultPrefix $lastPrefix
         $jobs += $answer.Job
         if ($answer.Credential) { $assigned += [IO.Path]::GetFullPath($answer.Credential) }
@@ -584,9 +690,11 @@ function Invoke-DBInteractiveSetup {
         $lastPrefix = if ($parts.Prefix) { $parts.Prefix } else { '/' }
         $data.Jobs = $jobs
         Add-DBScheduledJob $data $answer.Job.Id $answer.At
+        if (@($answer.IncrementalAt).Count) { Add-DBScheduledJob $data $answer.Job.Id $answer.IncrementalAt -Mode Incremental }
     }
     $data.Jobs = $jobs
-    Read-DBMonitoring $data $InstanceName
+    Read-DBMonitoring $data $InstanceName $environment
+    Save-DBEnvironment $environment $environmentPath
     Save-DBConfigurationData $data $configPath $InstancesRoot
     Protect-DBInstanceSecret (Read-DBConfiguration $configPath)
     return $configPath
@@ -675,7 +783,7 @@ function Get-DBSetupSummary {
         $lines += "Tarefa:            $(Get-DBTaskFolder)$($task.RegisteredName) - $($task.Frequency) $(@($task.At) -join ', '), jobs $(@($task.Jobs) -join ', ') ($state)"
     }
     $lines += ''
-    $lines += 'Proximo passo: rode um backup manual (Executar-Backup.bat) e confira os arquivos no bucket:'
+    $lines += 'Proximo passo: rode um backup manual (DBBackup.bat, opcao 5) e confira os arquivos no bucket:'
     $lines += "  & `"$PwshPath`" -NoProfile -File `"$ScriptPath`" -ConfigPath `"$($Configuration.ConfigPath)`" -All"
     return $lines
 }
@@ -708,12 +816,13 @@ function Invoke-DBConfigurationApply {
 
 function Edit-DBConfiguration {
     <#
-    Editar-Configuracao.bat: opens config.psd1 in an editor running elevated
+    Menu option Editar: opens config.psd1 in an editor running elevated
     (so Save writes the file, no "Save as"), waits for it to close and
     validates the file. Returns $true when it is valid and the operator wants
     to apply it now. An invalid file can be reopened or put back as it was.
+    -Validate replaces the instance checks (used for ambiente.psd1).
     #>
-    param([Parameter(Mandatory)][string] $ConfigPath, [Parameter(Mandatory)][string] $InstancesRoot, [string] $Editor = 'notepad.exe')
+    param([Parameter(Mandatory)][string] $ConfigPath, [string] $InstancesRoot, [string] $Editor = 'notepad.exe', [scriptblock] $Validate)
     $original = [IO.File]::ReadAllBytes($ConfigPath)
     while ($true) {
         Write-DBSetupMessage "Abrindo $ConfigPath no editor. Salve (Ctrl+S) e feche o editor para continuar."
@@ -723,9 +832,12 @@ function Edit-DBConfiguration {
         if ($watch.Elapsed.TotalSeconds -lt 3) { $null = Read-Host 'Depois de salvar e fechar o editor, pressione Enter' }
         $changed = -not [Linq.Enumerable]::SequenceEqual([byte[]] $original, [byte[]] [IO.File]::ReadAllBytes($ConfigPath))
         try {
-            $configuration = Read-DBConfiguration $ConfigPath
-            Assert-DBInstanceIsolation $configuration $InstancesRoot
-            $null = Get-DBScheduleTask $configuration
+            if ($Validate) { $null = & $Validate $ConfigPath }
+            else {
+                $configuration = Read-DBConfiguration $ConfigPath
+                Assert-DBInstanceIsolation $configuration $InstancesRoot
+                $null = Get-DBScheduleTask $configuration
+            }
         }
         catch {
             Write-Warning "Configuracao invalida: $(Protect-DBMessage $_.Exception.Message)"
@@ -744,7 +856,7 @@ function Edit-DBConfiguration {
         }
         Write-DBSetupMessage 'Configuracao valida.'
         if (Read-DBConfirmation 'Aplicar agora (permissoes, diagnostico e tarefas agendadas)?' $true) { return $true }
-        Write-DBSetupMessage 'Alteracoes salvas, mas nao aplicadas: as tarefas agendadas so mudam depois de Aplicar-Configuracao.bat.'
+        Write-DBSetupMessage 'Alteracoes salvas, mas nao aplicadas: as tarefas agendadas so mudam depois de Aplicar (DBBackup.bat, opcao 3).'
         return $false
     }
 }
@@ -779,4 +891,28 @@ function Invoke-DBScheduleApply {
     Invoke-DBSchedulePlan -Configuration $Configuration -Plan $plan
 }
 
-Export-ModuleMember -Function Edit-DBConfiguration, Read-DBConfirmation, ConvertTo-DBTimeList, Invoke-DBInteractiveSetup, Invoke-DBConfigurationApply, Test-DBInstance, ConvertTo-DBDataLiteral, Invoke-DBConnectionCheck, Test-DBDatabaseConnection, Get-DBOwnedTask, Get-DBSetupSummary, Split-DBRemoteRoot, Initialize-DBSharedSecret, Read-DBJob, Add-DBScheduledJob, Save-DBConfigurationData, ConvertTo-DBJobId, Find-DBCredentialCandidate, Restore-DBInheritedAccess
+function Edit-DBEnvironment {
+    <#
+    Menu option Ambiente: opens <root>\ambiente.psd1 (created from the template
+    when absent) and validates it together with every instance that uses it.
+    Returns $true when the instances should be reapplied.
+    #>
+    param([Parameter(Mandatory)][string] $InstancesRoot, [Parameter(Mandatory)][string] $TemplateRoot, [string] $Editor = 'notepad.exe')
+    $path = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($InstancesRoot))) 'ambiente.psd1'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        $created = Get-DBSetupEnvironment -Path $path -TemplateRoot $TemplateRoot
+        Save-DBEnvironment $created.Data $path
+        Write-DBSetupMessage "Criado $path a partir do modelo; preencha as ferramentas (Tools)."
+    }
+    $check = {
+        param($file)
+        $null = Read-DBEnvironment $file
+        foreach ($config in @(Get-ChildItem -Path (Join-Path $InstancesRoot '*/config.psd1') -File -ErrorAction SilentlyContinue)) {
+            try { $null = Read-DBConfiguration $config.FullName }
+            catch { throw "Instancia $(Split-Path -Leaf $config.DirectoryName): $($_.Exception.Message)" }
+        }
+    }
+    return Edit-DBConfiguration -ConfigPath $path -Editor $Editor -Validate $check
+}
+
+Export-ModuleMember -Function Edit-DBEnvironment, Save-DBEnvironment, Get-DBSetupEnvironment, Read-DBToolPath, Read-DBMonitoring, Edit-DBConfiguration, Read-DBConfirmation, ConvertTo-DBTimeList, Invoke-DBInteractiveSetup, Invoke-DBConfigurationApply, Test-DBInstance, ConvertTo-DBDataLiteral, Invoke-DBConnectionCheck, Test-DBDatabaseConnection, Get-DBOwnedTask, Get-DBSetupSummary, Split-DBRemoteRoot, Initialize-DBSharedSecret, Read-DBJob, Add-DBScheduledJob, Save-DBConfigurationData, ConvertTo-DBJobId, Find-DBCredentialCandidate, Restore-DBInheritedAccess

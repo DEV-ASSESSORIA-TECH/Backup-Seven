@@ -1,4 +1,4 @@
-# DBBackup — runbook v2.1.0
+# DBBackup — runbook v2.2.0
 
 ## Conceitos
 
@@ -8,48 +8,96 @@
   destino S3 próprios. Uma instância pode ter qualquer combinação de jobs,
   inclusive só pastas.
 - **Tarefa**: agendamento que executa um ou mais jobs da instância, em sequência.
+- **Ambiente**: `ambiente.psd1` na raiz da instalação, com as ferramentas e os
+  padrões do servidor (valem para todas as instâncias).
 
 ## Dependências e instalação
 
 Windows e PowerShell 7.2+ (instalador MSI; o da Microsoft Store fica em caminho
 que a tarefa SYSTEM pode não executar). 7-Zip, age e rclone instalados
 separadamente. MySQL precisa de mysql/mysqldump 5.x compatíveis com a origem.
-SQL Anywhere precisa somente de dbbackup 17 e suas bibliotecas; `dbping.exe` na
-mesma pasta, se existir, é usado pelo teste de conexão do setup e pela
-estimativa de espaço da primeira execução. O DBBackup não
+SQL Anywhere precisa da pasta de ferramentas 17 (`...\SQL Anywhere 17\Tools`
+no pacote reduzido ou `...\Bin64` numa instalação completa) com `dbbackup.exe`
+e `dbping.exe`. O `dbping` é usado no teste de conexão, na estimativa de espaço
+da primeira execução e para achar a pasta do log de produção (limpeza dos logs
+renomeados do incremental). O DBBackup não
 instala dependências.
 
 1. Confira o SHA-256 do ZIP contra o `.zip.sha256`.
 2. Extraia, por exemplo, em `C:\TI\Scripts\DBBackup`.
-3. Execute `Setup.bat` (pede elevação).
+3. Execute `DBBackup.bat` (pede elevação) e escolha a opção 1.
 
 ```text
 DBBackup\
-  Setup.bat                           cria instância ou adiciona jobs
-  Editar-Configuracao.bat             abre o config.psd1 como Administrador, valida e aplica
-  Aplicar-Configuracao.bat            reaplica ACL, diagnóstico e tarefas
-  Diagnosticar.bat                    verificações locais
-  Executar-Backup.bat                 backup manual com andamento na tela
-  Atualizar.bat                       atualiza para a última versão do GitHub
+  DBBackup.bat                        menu de operação (único lançador)
   LEIA-ME.txt                         versão instalada e links
-  App\                                scripts, módulos, modelo, VERSION
+  ambiente.psd1                       ferramentas e padrões do servidor (opção 7)
+  App\                                scripts, módulos, modelos, VERSION
   Instances\<instância>\
-    config.psd1                        configuração (alterar com Editar-Configuracao.bat)
+    config.psd1                        configuração (opção 2 do menu)
     Secrets\                          restrita a SYSTEM e Administradores
-    Runtime\                          restrita (trabalho temporário, pendências)
+    Runtime\                          restrita (trabalho temporário, pendências, base do incremental)
   Completed\<instância>\<job>\        pacotes criptografados locais
   Logs\<instância>\                    um log por execução
   Versoes-Anteriores\                 cópia de App e .bat antes de cada atualização
 ```
 
-Os `.bat` usam `%ProgramFiles%\PowerShell\7\pwsh.exe` ou, se não existir, o
-`pwsh.exe` do PATH, e pedem elevação. Os que agem sobre uma instância listam as
-instâncias de `Instances\`: com uma só, ela é escolhida direto; com várias,
-digite o número (um caminho completo de `config.psd1` também é aceito).
+### Menu (`DBBackup.bat`)
+
+```text
+  1  Nova instancia / adicionar jobs
+  2  Editar configuracao de uma instancia
+  3  Aplicar configuracao (permissoes, diagnostico, tarefas)
+  4  Diagnosticar
+  5  Executar backup agora (completo ou incremental)
+  6  Ultimos resultados
+  7  Ambiente do servidor (ferramentas e padroes)
+  8  Atualizar o DBBackup
+  9  Configuracoes versionadas (puxar do GitHub / exportar)
+  0  Sair
+```
+
+Cada opção roda o script correspondente de `App\` num processo separado e, ao
+terminar (com sucesso ou erro), volta ao menu. O `DBBackup.bat` usa
+`%ProgramFiles%\PowerShell\7\pwsh.exe` ou, se não existir, o `pwsh.exe` do PATH,
+e pede elevação. As opções que agem sobre uma instância listam as instâncias de
+`Instances\`: com uma só, ela é escolhida direto; com várias, digite o número.
+A opção 6 mostra a linha `RESULTADO` das últimas execuções de cada instância.
+
+## Ambiente do servidor (`ambiente.psd1`)
+
+Ferramentas e padrões são do servidor, não da instância. O primeiro setup cria
+`<instalação>\ambiente.psd1` (a partir de `App\Templates\ambiente.example.psd1`)
+e pergunta os caminhos uma vez; as instâncias seguintes não perguntam de novo.
+Uma instância criada pela 2.0/2.1 entrega as próprias seções `Tools`,
+`Execution`, `Archive` e `Retention` para o ambiente quando passa pelo setup.
+
+```powershell
+@{
+    SchemaVersion = 1
+    Tools = @{ SevenZip = 'C:\Program Files\7-Zip\7z.exe'; Age = 'C:\Program Files\age\age.exe'
+               Rclone = 'C:\Program Files\rclone\rclone.exe'
+               MySql = '...\mysql.exe'; MySqlDump = '...\mysqldump.exe'
+               SqlAnywhere = 'C:\Program Files\SQL Anywhere 17\Tools' }   # pasta, nao o .exe
+    Execution = @{ ToolTimeoutSeconds = 21600; RunTimeoutSeconds = 39600; ReserveBytes = 1073741824; EstimatedDatabaseBytes = 0 }
+    Archive = @{ CompressionLevel = 5; CpuLimitPercent = 50 }
+    Retention = @{ CompletedDays = 7; LogDays = 30; KeepLocalPayload = $true }
+    Monitoring = @{ TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup' }
+}
+```
+
+Precedência: valor da instância > `ambiente.psd1` > padrão interno. Uma seção
+`Tools`, `Execution`, `Archive` ou `Retention` no `config.psd1` só é necessária
+para mudar um valor naquela instância. `Tools.SqlAnywhere` é a pasta; o
+`dbbackup.exe` e o `dbping.exe` são procurados nela. Para alterar, use a opção 7:
+ela abre o arquivo como Administrador, valida o ambiente e todas as instâncias e
+oferece reaplicar todas. O `ambiente.psd1` tem a mesma permissão do
+`config.psd1` (escrita só por Administradores), porque a tarefa SYSTEM executa os
+caminhos de `Tools`.
 
 ## Setup guiado
 
-O `Setup.bat` pergunta e valida cada resposta na hora:
+A opção 1 do menu pergunta e valida cada resposta na hora:
 
 1. **Nome da instância** (ex.: `assessoria`). Se já existir uma configuração 2.0,
    o setup oferece adicionar jobs ou apenas reaplicar. Uma configuração 1.x é
@@ -86,7 +134,7 @@ O `Setup.bat` pergunta e valida cada resposta na hora:
 
 Para reaproveitar credenciais de uma instalação anterior, copie os arquivos para
 `Instances\<instância>\Secrets\` antes de rodar o setup. Se algo falhar depois
-de salvar as credenciais, o setup indica o `Aplicar-Configuracao.bat` com o
+de salvar as credenciais, o setup indica a opção 3 (Aplicar) com o
 caminho do `config.psd1`; nada precisa ser digitado de novo.
 
 ## Permissões
@@ -99,7 +147,7 @@ criadas pela 1.x). Na instalação típica a herança permite leitura a usuário
 escrita só a Administradores, e isso é intencional: a tarefa roda como SYSTEM os
 executáveis indicados em `Tools`, então quem altera o `config.psd1` precisa ser
 administrador. Por isso o Bloco de Notas aberto sem elevação só oferece "Salvar
-como"; use **`Editar-Configuracao.bat`**.
+como"; use a **opção 2 do menu**.
 
 `Completed` (pacotes criptografados) e `Logs` (sem senhas) são pastas de
 operação, com a permissão herdada. Uma execução nunca altera permissões de
@@ -113,29 +161,29 @@ pastas existentes. O Apply torna privado o `Runtime` da instância (padrão
 @{
     SchemaVersion = 2
     InstanceName = 'assessoria'
-    Tools = @{ SevenZip = '...\7z.exe'; Age = '...\age.exe'; Rclone = '...\rclone.exe'
-               MySql = '...\mysql.exe'; MySqlDump = '...\mysqldump.exe'; DbBackup = '...\dbbackup.exe' }
     Jobs = @(
         @{ Id = 'seven'; Provider = 'MySQL'; Database = 'a_estoque'; CredentialFile = 'Secrets/seven.cnf'
            ExtraArguments = @('--skip-events'); RemoteRoot = 's3:assessoriatech-backups-seven-prod/ASSESSORIA' }
         @{ Id = 'dominio'; Provider = 'SQLAnywhere'; Database = 'contabil'; CredentialFile = 'Secrets/dominio.options'
-           RemoteRoot = 's3:<bucket-dominio>/ASSESSORIA' }
+           RemoteRoot = 's3:<bucket-dominio>/ASSESSORIA'; Incremental = @{ Enabled = $true; KeepRenamedLogDays = 3 } }
         @{ Id = 'documentos'; Provider = 'Directory'; SourcePath = 'D:\Documentos'; RemoteRoot = 's3:<bucket>/ASSESSORIA' }
     )
     Schedule = @{ Tasks = @(
-        @{ Name = 'diario-1230-1900'; Jobs = @('seven','dominio'); At = @('12:30','19:00'); Frequency = 'Daily' }
+        @{ Name = 'diario-1900'; Jobs = @('seven','dominio'); At = '19:00'; Frequency = 'Daily' }
+        @{ Name = 'incremental'; Jobs = @('dominio'); Mode = 'Incremental'; At = @('09:00','12:00','15:00','18:00') }
         @{ Name = 'semanal-docs'; Jobs = @('documentos'); At = '03:00'; Frequency = 'Weekly'; Days = @('Saturday') }
     ) }
-    # Storage, Encryption, Archive, Retention, Execution, Monitoring: ver App\Templates\config.example.psd1
+    # Storage, Encryption, Monitoring: ver App\Templates\config.example.psd1
+    # Tools, Execution, Archive, Retention: no ambiente.psd1 (aqui só para sobrepor)
 }
 ```
 
-Para alterar, use **`Editar-Configuracao.bat`**: ele escolhe a instância, abre
+Para alterar, use a **opção 2 do menu**: ela escolhe a instância, abre
 o `config.psd1` no Bloco de Notas como Administrador, espera você salvar e
 fechar, valida o arquivo e pergunta se aplica. Se o arquivo ficar inválido, ele
 oferece abrir de novo ou voltar ao conteúdo anterior; enquanto estiver inválido,
 os backups agendados terminam com código 2. Uma alteração feita de outro jeito
-precisa de `Aplicar-Configuracao.bat` para chegar às tarefas.
+precisa da opção 3 (Aplicar) para chegar às tarefas.
 
 `At` aceita um horário (`'19:00'`) ou vários (`@('12:30','19:00')`): a tarefa
 ganha um disparo por horário e roda os mesmos jobs em cada um. Ids de job são
@@ -305,9 +353,11 @@ nenhum trabalho falhou. Não apague checkpoints durante atualização.
 
 ## Diagnosticar, planejar e aplicar
 
+Opções 4 (Diagnosticar) e 3 (Aplicar) do menu, ou pela linha de comando:
+
 ```powershell
-.\Diagnosticar.bat
-.\Aplicar-Configuracao.bat
+& pwsh -File .\App\Diagnose.ps1 -ConfigPath .\Instances\assessoria\config.psd1
+& pwsh -File .\App\Setup.ps1 -ConfigPath .\Instances\assessoria\config.psd1 -Apply
 & pwsh -File .\App\Setup.ps1 -ConfigPath .\Instances\assessoria\config.psd1 -Plan
 ```
 
@@ -316,7 +366,8 @@ espaço e remotes declarados. Não conecta aos bancos e não grava. Plan também
 cria diretórios, altera ACL ou aplica tarefas.
 
 As tarefas rodam como SYSTEM na pasta `\DBBackup\` do Agendador, com o nome
-`<instância>-<tarefa>`, e executam `App\Backup.ps1 -Job <job1>,<job2>`. Cada
+`<instância>-<tarefa>`, e executam `App\Backup.ps1 -Job <job1>,<job2>` (com
+`-Mode Incremental` nas tarefas incrementais). Cada
 instância só altera as próprias tarefas (marca de dono na descrição); uma
 tarefa de outra configuração com o mesmo nome causa conflito. Há agenda diária,
 semanal e mensal (DaysOfMonth 1..31 ou Last). Sem `Schedule`, a agenda é
@@ -326,14 +377,15 @@ mesma tarefa.
 
 ## Execução e interpretação
 
-`Executar-Backup.bat` escolhe a instância, mostra os jobs e pergunta quais
-executar (Enter = todos). Cada linha do log aparece na janela enquanto o backup
+A opção 5 do menu escolhe a instância, pergunta completo ou incremental (quando
+há job com incremental), mostra os jobs e pergunta quais executar (Enter = todos). Cada linha do log aparece na janela enquanto o backup
 roda (`Step 1/4` backup, `2/4` compactação, `3/4` criptografia, `4/4` envio), e
 a janela termina com o resultado. Pela linha de comando:
 
 ```powershell
 & pwsh -File .\App\Backup.ps1 -ConfigPath .\Instances\assessoria\config.psd1 -All
 & pwsh -File .\App\Backup.ps1 -ConfigPath .\Instances\assessoria\config.psd1 -Job seven,documentos
+& pwsh -File .\App\Backup.ps1 -ConfigPath .\Instances\assessoria\config.psd1 -Job dominio -Mode Incremental
 ```
 
 As ferramentas externas rodam sem entrada (stdin fechado): uma ferramenta que
@@ -370,54 +422,169 @@ retenção local por idade (`Retention.CompletedDays`); com
 conferência remota nem o teste 7z comprovam recuperação do banco; recovery é
 externo ao projeto.
 
+## Backup incremental do SQL Anywhere (Domínio)
+
+Incremental **acumulado**: cada incremental copia o log de transações inteiro
+desde o último completo. Para restaurar, basta o completo e o **último**
+incremental daquele completo.
+
+- **Pré-requisito: desative todos os agendamentos de backup do agente Domínio.**
+  O backup completo do agente trunca o log; com dois produtores, o incremental
+  do DBBackup perderia a base.
+- Job: `Incremental = @{ Enabled = $true; KeepRenamedLogDays = 3 }` (setup:
+  pergunta "Ativar backup incremental", padrão Sim, e os horários, padrão
+  `09:00,12:00,15:00,18:00`; o completo fica às `19:00`).
+- O **completo** de um job com incremental roda `dbbackup -r`: copia banco e log
+  e, em seguida, renomeia o log de produção (`AAMMDDxx.log`, na pasta do banco) e
+  começa um log novo. Esse completo vira a **base**
+  (`Runtime\Incremental\<job>.json`).
+- O **incremental** (`Mode = 'Incremental'`) roda `dbbackup -t` sem renomear:
+  copia só o log atual, que tem tudo desde a base. Arquivo
+  `..._<job>_INCREMENTAL.7z.age`, no S3 em
+  `<RemoteRoot>/<job>/incremental/aaaa/mm/dd/`.
+- Sem base válida (primeira execução, ou completo que falhou depois de renomear
+  o log), o incremental é **promovido a completo** e o log registra o aviso.
+- Logs renomeados (`AAMMDDxx.log`) são apagados da pasta do banco só depois que
+  o completo de base foi confirmado no S3 e quando têm mais de
+  `KeepRenamedLogDays` dias. O log atual (`contabil.log`) nunca é tocado.
+- `state.json` e `manifest.json` registram `Role`/`Kind` (`FULL` ou
+  `INCREMENTAL`), e os incrementais têm `BaseRunId` e `BaseRecoveryPointUtc`.
+
+### Retenção
+
+Local (`Completed`): completos e incrementais saem após
+`Retention.CompletedDays` (7). Além disso, quando um completo novo é confirmado,
+os incrementais cuja base é mais antiga que o completo anterior saem. Na
+prática, fica o completo de hoje, o de ontem e os incrementais de hoje
+(feitos sobre o completo de ontem). Se um completo falhar, nada novo é apagado.
+
+No S3, o DBBackup não apaga nada (IAM sem `DeleteObject`). A retenção é feita
+por regras de lifecycle no bucket, com prefixos separados. Exemplo (30 dias para
+completos e 3 dias para incrementais; ajuste os valores e o prefixo):
+
+```json
+{
+  "Rules": [
+    { "ID": "dominio-completo-30d", "Status": "Enabled",
+      "Filter": { "Prefix": "ASSESSORIA/dominio/2" },
+      "Expiration": { "Days": 30 } },
+    { "ID": "dominio-incremental-3d", "Status": "Enabled",
+      "Filter": { "Prefix": "ASSESSORIA/dominio/incremental/" },
+      "Expiration": { "Days": 3 } },
+    { "ID": "logs-90d", "Status": "Enabled",
+      "Filter": { "Prefix": "ASSESSORIA/Logs/" },
+      "Expiration": { "Days": 90 } }
+  ]
+}
+```
+
+```powershell
+aws s3api put-bucket-lifecycle-configuration --bucket <bucket-dominio> --lifecycle-configuration file://lifecycle.json
+```
+
+O prefixo `ASSESSORIA/dominio/2` pega as pastas de data dos completos
+(`2026/...`) sem pegar `incremental/`. Com versionamento ou Object Lock no
+bucket, use também `NoncurrentVersionExpiration`.
+
+### Monitoramento
+
+O incremental publica uma série própria: `backup_id="<id do job>-log"`,
+`kind="log"`, com prazo (`backup_success_due_timestamp_seconds`) pelo próximo
+horário incremental. Um completo também conta como sucesso dessa série.
+
+### Restaurar completo + incremental
+
+1. Baixe e decifre o completo de base e o **último** incremental com
+   `BaseRunId` igual ao `RunId` do completo (veja `state.json`/`manifest.json`;
+   na prática, o último incremental antes do completo seguinte).
+2. Extraia o completo numa pasta de teste (`contabil.db` + `contabil.log`) e o
+   incremental numa subpasta (`incremental\contabil.log`).
+3. Numa máquina que **não** seja a de produção, aplique os logs na cópia:
+
+   ```bat
+   dbsrv17 -o restore.txt C:\Restore\contabil.db -a C:\Restore\contabil.log
+   dbsrv17 -o restore.txt C:\Restore\contabil.db -a C:\Restore\incremental\contabil.log
+   ```
+
+   Cada `-a` aplica o log e encerra o servidor. Depois, inicie normalmente e
+   valide (`dbvalid`).
+4. Apague os dados restaurados em texto puro ao terminar o teste.
+
+## Configurações versionadas
+
+A pasta `configuracoes/` do repositório guarda, por servidor,
+`<servidor>/ambiente.psd1` e `<servidor>/<instância>/config.psd1`. Ela não entra
+no pacote, nas releases nem no CHANGELOG, e **nunca** recebe Secrets; o
+repositório é público. Opção 9 do menu:
+
+- **Exportar**: grava os arquivos em `Configuracoes-Exportadas\<servidor>\`
+  para você copiar para `configuracoes/` e fazer o commit na `main`.
+- **Puxar do GitHub**: lê `configuracoes/<servidor>/` da `main` e mostra a
+  diferença de cada arquivo. Depois de confirmar, grava os arquivos (a cópia
+  anterior fica como `<arquivo>.anterior`) e valida tudo. Se algo estiver
+  inválido, volta tudo como estava. Por fim, oferece aplicar.
+
+O nome do servidor é o nome do computador em minúsculas. Detalhes em
+`configuracoes/README.md`.
+
 ## Atualização e migração
 
-### Atualizar (2.1 em diante): `Atualizar.bat`
+### Atualizar (2.2 em diante): opção 8 do menu
 
-1. Rode **`Atualizar.bat`** (pede elevação). Ele consulta a última release no
-   GitHub e mostra a versão instalada e a disponível.
+1. No `DBBackup.bat`, escolha **8**. Ele consulta a última release no GitHub e
+   mostra a versão instalada e a disponível.
 2. Confirme. Ele baixa o ZIP e o `.sha256`, confere o checksum e verifica que o
    pacote só tem `App\`, `.bat` e `LEIA-ME.txt`.
 3. Se algum backup estiver em execução, ele para sem alterar nada (código 3);
    rode de novo depois.
 4. Ele guarda a versão atual em `Versoes-Anteriores\<versão>_<data>\` (as três
-   mais recentes são mantidas), substitui `App\` e os arquivos da raiz e, se algo
+   mais recentes são mantidas) e substitui `App\` e os arquivos da raiz. Se algo
    falhar no meio, restaura a versão anterior sozinho.
-5. Por fim, oferece reaplicar a configuração de cada instância com a versão
-   nova (recomendado: as tarefas são conferidas e só mudam com `SIM`).
+5. Oferece reaplicar a configuração de cada instância e reabre o menu novo.
 
-`Instances` (configurações, `Secrets`, `Runtime`), `Completed` e `Logs` nunca são
-tocados. Para voltar a uma versão anterior, copie o conteúdo de
-`Versoes-Anteriores\<versão>_<data>\` para a raiz da instalação.
+`ambiente.psd1`, `Instances` (configurações, `Secrets`, `Runtime`), `Completed`
+e `Logs` nunca são tocados. Para voltar a uma versão anterior, copie o conteúdo
+de `Versoes-Anteriores\<versão>_<data>\` para a raiz da instalação.
 
 Sem internet: baixe `DBBackup-X.Y.Z.zip` e `DBBackup-X.Y.Z.zip.sha256` da página
 de releases, coloque os dois na mesma pasta e arraste o ZIP sobre o
-`Atualizar.bat`. O checksum é conferido se o `.sha256` estiver ao lado.
+`DBBackup.bat`. O checksum é conferido se o `.sha256` estiver ao lado.
 
-### Atualizar manualmente (e da 2.0.0 para a 2.1.0)
+### Da 2.1 para a 2.2 (manual)
 
-A 2.0.0 não tem o `Atualizar.bat`; a primeira atualização é manual. Depois
-disso, use o `Atualizar.bat`.
+O `Atualizar.bat` da 2.1 exige `Setup.bat` no pacote, e a 2.2 não tem mais esse
+arquivo. Por isso, essa atualização é manual:
 
 1. Confira se nenhum backup está em execução.
 2. Confira o SHA-256 do ZIP e extraia numa pasta temporária, por exemplo
-   `C:\TI\Temp\DBBackup-2.1.0`.
-3. Copie para a instalação (o pacote não contém `Instances`, `Completed` nem
-   `Logs`, então nada disso é sobrescrito):
+   `C:\TI\Temp\DBBackup-2.2.0`.
+3. Copie para a instalação e apague os lançadores antigos:
 
    ```bat
-   robocopy C:\TI\Temp\DBBackup-2.1.0\App C:\TI\Scripts\DBBackup\App /MIR
-   robocopy C:\TI\Temp\DBBackup-2.1.0 C:\TI\Scripts\DBBackup *.bat LEIA-ME.txt
+   robocopy C:\TI\Temp\DBBackup-2.2.0\App C:\TI\Scripts\DBBackup\App /MIR
+   robocopy C:\TI\Temp\DBBackup-2.2.0 C:\TI\Scripts\DBBackup DBBackup.bat LEIA-ME.txt
+   del C:\TI\Scripts\DBBackup\Setup.bat C:\TI\Scripts\DBBackup\Aplicar-Configuracao.bat C:\TI\Scripts\DBBackup\Editar-Configuracao.bat C:\TI\Scripts\DBBackup\Diagnosticar.bat C:\TI\Scripts\DBBackup\Executar-Backup.bat C:\TI\Scripts\DBBackup\Atualizar.bat
    ```
 
-   O primeiro comando espelha `App\` (remove módulos que deixaram de existir); o
-   segundo copia só os arquivos da raiz.
-4. Rode `Aplicar-Configuracao.bat` para cada instância e apague a pasta
-   temporária.
+4. Abra o `DBBackup.bat` e escolha **1** com o nome de uma instância existente.
+   O setup cria o `ambiente.psd1` com as ferramentas dela (pergunta só o que
+   faltar, como a pasta do SQL Anywhere) e oferece adicionar jobs. Responda
+   "Não" para apenas reaplicar.
+5. Para ativar o incremental num job SQL Anywhere existente, desative antes o
+   backup do agente Domínio. Depois, pela opção 2, inclua
+   `Incremental = @{ Enabled = $true; KeepRenamedLogDays = 3 }` no job e a
+   tarefa `@{ Name = 'incremental'; Jobs = @('dominio'); Mode = 'Incremental'; At = @('09:00','12:00','15:00','18:00') }`.
+   Em seguida, rode um completo (opção 5) para criar a base.
+
+### Atualizar manualmente (qualquer versão)
+
+Mesmo procedimento: copie `App\` com `/MIR` e os arquivos da raiz do pacote com
+`robocopy`, depois aplique cada instância (opção 3). O pacote não contém
+`ambiente.psd1`, `Instances`, `Completed` nem `Logs`.
 
 Da 1.x para a 2.0: os arquivos de configuração mudaram (schema 2). Extraia a 2.0
 numa pasta nova, copie os arquivos de `Secrets` da instância antiga para
-`Instances\<instância>\Secrets\` e rode o `Setup.bat`: ele oferece reaproveitar
+`Instances\<instância>\Secrets\` e rode a opção 1 do menu: ela oferece reaproveitar
 `rclone.conf`, `recipients.txt` e as credenciais de banco. Remova as tarefas da
 1.x depois de conferir a 2.0 (a partir da 2.1, o Apply lista essas tarefas e
 oferece removê-las). Pacotes e logs antigos não são
