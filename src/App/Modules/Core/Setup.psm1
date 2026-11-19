@@ -2,17 +2,52 @@ Set-StrictMode -Version Latest
 foreach ($name in @('Configuration','Runtime','Artifacts','Schedule','Capacity','Encryption','Storage','Process','Incremental')) { Import-Module (Join-Path $PSScriptRoot "$name.psm1") }
 Import-Module (Join-Path $PSScriptRoot '../Providers/SQLAnywhere/SQLAnywhere.psm1')
 
-function ConvertTo-DBDataLiteral {
+# Key order of the generated files; keys not listed follow in alphabetical order.
+$script:DataKeyOrder = @(
+    'SchemaVersion','InstanceName','Id','Name','Mode',
+    'Jobs','Schedule','Storage','Encryption','Monitoring','Paths','Tools','Execution','Archive','Retention',
+    'Provider','Database','SourcePath','CredentialFile','ExtraArguments','RemoteRoot','Incremental',
+    'At','Frequency','Days','DaysOfMonth','Enabled',
+    'Service','Site','TextfileDirectory','BackupIds','Criticality','ExpectedIntervalHours',
+    'ConfigPath','Destination','RecipientsFile','KeepRenamedLogDays'
+)
+
+function Test-DBScalarLiteral {
     param([AllowNull()] $Value)
+    return ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType])
+}
+
+function ConvertTo-DBDataLiteral {
+    <#
+    PowerShell data literal of a configuration value, indented with 4 spaces:
+    bare keys when they are identifiers, a fixed key order, scalar lists and
+    small scalar hashtables on one line, everything else one entry per line.
+    #>
+    param([AllowNull()] $Value, [int] $Depth = 0)
+    $pad = ' ' * (4 * ($Depth + 1))
+    $close = ' ' * (4 * $Depth)
     if ($null -eq $Value) { return '$null' }
     if ($Value -is [bool]) { if ($Value) { return '$true' } else { return '$false' } }
-    if ($Value -is [Collections.IDictionary]) {
-        $pairs = @($Value.Keys | Sort-Object | ForEach-Object { "$(ConvertTo-DBDataLiteral ([string] $_)) = $(ConvertTo-DBDataLiteral $Value[$_])" })
-        return "@{`n" + ($pairs -join ";`n") + "`n}"
-    }
     if ($Value -is [string]) { return "'" + $Value.Replace("'", "''") + "'" }
+    if ($Value -is [Collections.IDictionary]) {
+        if ($Value.Count -eq 0) { return '@{}' }
+        $keys = @($Value.Keys | ForEach-Object { [string] $_ } | Sort-Object @{ Expression = { $i = [array]::IndexOf($script:DataKeyOrder, $_); if ($i -lt 0) { 1000 } else { $i } } }, @{ Expression = { $_ } })
+        $pairs = @(foreach ($key in $keys) {
+            $name = if ($key -match '^[A-Za-z_][A-Za-z0-9_]*$') { $key } else { ConvertTo-DBDataLiteral $key }
+            "$name = $(ConvertTo-DBDataLiteral $Value[$key] ($Depth + 1))"
+        })
+        $scalar = -not @($keys | Where-Object { -not (Test-DBScalarLiteral $Value[$_]) }).Count
+        $inline = '@{ ' + ($pairs -join '; ') + ' }'
+        if ($scalar -and $Depth -gt 0 -and $keys.Count -le 4 -and $inline.Length -le 100) { return $inline }
+        return "@{`n" + (($pairs | ForEach-Object { $pad + $_ }) -join "`n") + "`n$close}"
+    }
     if ($Value -is [Collections.IEnumerable]) {
-        return '@(' + ((@($Value) | ForEach-Object { ConvertTo-DBDataLiteral $_ }) -join ', ') + ')'
+        $items = @($Value)
+        if ($items.Count -eq 0) { return '@()' }
+        if (-not @($items | Where-Object { -not (Test-DBScalarLiteral $_) }).Count) {
+            return '@(' + (($items | ForEach-Object { ConvertTo-DBDataLiteral $_ }) -join ', ') + ')'
+        }
+        return "@(`n" + (($items | ForEach-Object { $pad + (ConvertTo-DBDataLiteral $_ ($Depth + 1)) }) -join ",`n") + "`n$close)"
     }
     if ($Value -is [ValueType]) { return [Convert]::ToString($Value, [Globalization.CultureInfo]::InvariantCulture) }
     throw 'Unsupported configuration value type.'
@@ -893,6 +928,36 @@ function Invoke-DBScheduleApply {
     Invoke-DBSchedulePlan -Configuration $Configuration -Plan $plan
 }
 
+function Format-DBConfigurationFile {
+    <#
+    Rewrites ambiente.psd1 and every Instances\<instance>\config.psd1 in the
+    standard layout (same data, 4-space indentation, fixed key order). The
+    previous text stays as <file>.anterior; comments are not kept. Each file is
+    validated before it replaces the old one. Returns the rewritten files.
+    #>
+    param([Parameter(Mandatory)][string] $InstallRoot)
+    $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
+    $instancesRoot = Join-Path $InstallRoot 'Instances'
+    $changed = @()
+    $files = @()
+    $environment = Join-Path $InstallRoot 'ambiente.psd1'
+    if (Test-Path -LiteralPath $environment -PathType Leaf) { $files += $environment }
+    $files += @(Get-ChildItem -Path (Join-Path $instancesRoot '*/config.psd1') -File -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object FullName)
+    foreach ($file in $files) {
+        $before = [IO.File]::ReadAllText($file)
+        $data = Import-PowerShellDataFile -LiteralPath $file
+        Copy-Item -LiteralPath $file -Destination "$file.anterior" -Force
+        if ($file -eq $environment) { Save-DBEnvironment $data $file }
+        else { Save-DBConfigurationData $data $file $instancesRoot }
+        if (($before -replace '\r\n', "`n").TrimEnd() -ceq (([IO.File]::ReadAllText($file)) -replace '\r\n', "`n").TrimEnd()) {
+            Remove-Item -LiteralPath "$file.anterior" -Force
+            continue
+        }
+        $changed += $file
+    }
+    return $changed
+}
+
 function Edit-DBEnvironment {
     <#
     Menu option Ambiente: opens <root>\ambiente.psd1 (created from the template
@@ -918,4 +983,4 @@ function Edit-DBEnvironment {
     return Edit-DBConfiguration -ConfigPath $path -InstancesRoot $InstancesRoot -Editor $Editor -Validate $check
 }
 
-Export-ModuleMember -Function Edit-DBEnvironment, Save-DBEnvironment, Get-DBSetupEnvironment, Read-DBToolPath, Read-DBMonitoring, Edit-DBConfiguration, Read-DBConfirmation, ConvertTo-DBTimeList, Invoke-DBInteractiveSetup, Invoke-DBConfigurationApply, Test-DBInstance, ConvertTo-DBDataLiteral, Invoke-DBConnectionCheck, Test-DBDatabaseConnection, Get-DBOwnedTask, Get-DBSetupSummary, Split-DBRemoteRoot, Initialize-DBSharedSecret, Read-DBJob, Add-DBScheduledJob, Save-DBConfigurationData, ConvertTo-DBJobId, Find-DBCredentialCandidate, Restore-DBInheritedAccess
+Export-ModuleMember -Function Format-DBConfigurationFile, Edit-DBEnvironment, Save-DBEnvironment, Get-DBSetupEnvironment, Read-DBToolPath, Read-DBMonitoring, Edit-DBConfiguration, Read-DBConfirmation, ConvertTo-DBTimeList, Invoke-DBInteractiveSetup, Invoke-DBConfigurationApply, Test-DBInstance, ConvertTo-DBDataLiteral, Invoke-DBConnectionCheck, Test-DBDatabaseConnection, Get-DBOwnedTask, Get-DBSetupSummary, Split-DBRemoteRoot, Initialize-DBSharedSecret, Read-DBJob, Add-DBScheduledJob, Save-DBConfigurationData, ConvertTo-DBJobId, Find-DBCredentialCandidate, Restore-DBInheritedAccess

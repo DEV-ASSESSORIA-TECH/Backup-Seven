@@ -7,7 +7,9 @@ param([string] $ConfigPath, [string] $InstanceName,
     # Menu (Editar): open config.psd1 elevated, validate, then apply.
     [switch] $Edit,
     # Menu (Ambiente): edit <root>\ambiente.psd1, validate, reapply every instance.
-    [switch] $Environment)
+    [switch] $Environment,
+    # Menu (Configuracoes > padronizar): rewrite ambiente.psd1 and every config.psd1 in the standard layout.
+    [switch] $Format)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Setup.psm1') -Force
@@ -18,12 +20,18 @@ Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Schedule.psm1')
 # tells the operator that nothing needs to be typed again.
 $savedConfigPath = $null
 try {
-    if (@($Apply, $Plan, $Edit, $Environment | Where-Object { $_ }).Count -gt 1) { throw 'Choose -Apply, -Plan, -Edit or -Environment.' }
+    if (@($Apply, $Plan, $Edit, $Environment, $Format | Where-Object { $_ }).Count -gt 1) { throw 'Choose -Apply, -Plan, -Edit, -Environment or -Format.' }
     $InstancesRoot = [IO.Path]::GetFullPath($InstancesRoot)
     if (-not $Plan) {
         if (-not $IsWindows) { throw 'DBBackup setup requires Windows.' }
         $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Execute setup as Administrator.' }
+    }
+    if ($Format) {
+        $changed = @(Format-DBConfigurationFile -InstallRoot (Split-Path -Parent $InstancesRoot))
+        if ($changed.Count) { 'Padronizados (copia anterior em <arquivo>.anterior):' | Out-Host; $changed | ForEach-Object { "  $_" } | Out-Host }
+        else { 'Todos os arquivos ja estavam no formato padrao.' | Out-Host }
+        exit 0
     }
     if ($Environment) {
         if (-not (Edit-DBEnvironment -InstancesRoot $InstancesRoot -TemplateRoot (Join-Path $PSScriptRoot 'Templates'))) { exit 0 }

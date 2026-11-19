@@ -13,6 +13,15 @@ do Keep a Changelog, sem exigir todas as seções em cada versão.
   `ambiente.psd1` correto, porque a pasta `Instances` não chegava à checagem das
   instâncias.
 
+### Alterado
+
+- `config.psd1` e `ambiente.psd1` são gravados com indentação de 4 espaços,
+  chaves sem aspas e ordem fixa, com listas simples e hashtables pequenas numa
+  linha.
+- Menu, opção 9: nova sub-opção "padronizar formatação", que reescreve os
+  arquivos existentes nesse formato sem mudar os dados. A cópia anterior fica
+  em `<arquivo>.anterior`.
+
 ## [2.2.2] - 2026-11-19
 
 ### Corrigido

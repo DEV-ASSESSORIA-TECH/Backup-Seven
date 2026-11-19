@@ -246,3 +246,25 @@ Describe 'Server environment editing (menu option 7)' {
         Edit-DBEnvironment -InstancesRoot (Join-Path $root 'Instances') -TemplateRoot (Join-Path $script:Repo 'src/App/Templates') | Should -BeFalse
     }
 }
+
+Describe 'Standard layout of the configuration files' {
+    It 'rewrites ambiente.psd1 and config.psd1 indented, with the same data, keeping .anterior' {
+        $root = Join-Path $TestDrive 'format'
+        $instance = Join-Path $root 'Instances/acme'
+        $null = New-Item -ItemType Directory (Join-Path $instance 'Secrets') -Force
+        $config = Join-Path $instance 'config.psd1'
+        Set-Content $config (Get-DBTestConfigText -InstanceName 'acme' -RemoteRoot 's3:bucket/ACME')
+        Set-Content (Join-Path $root 'ambiente.psd1') "@{`n'SchemaVersion' = 1;`n'Monitoring' = @{`n'Site' = 'assessoria'`n}`n}"
+        $before = Import-PowerShellDataFile $config
+        $changed = @(Format-DBConfigurationFile -InstallRoot $root)
+        $changed.Count | Should -Be 2
+        $text = Get-Content $config -Raw
+        $text | Should -Match "(?m)^    InstanceName = 'acme'$"
+        $text | Should -Match "(?m)^        @\{$"
+        $text | Should -Match "(?m)^            Id = 'database'$"
+        (Get-Content (Join-Path $root 'ambiente.psd1') -Raw) | Should -Match "(?m)^    Monitoring = @\{ Site = 'assessoria' \}$"
+        (ConvertTo-DBDataLiteral (Import-PowerShellDataFile $config)) | Should -Be (ConvertTo-DBDataLiteral $before)
+        "$config.anterior" | Should -Exist
+        @(Format-DBConfigurationFile -InstallRoot $root).Count | Should -Be 0
+    }
+}

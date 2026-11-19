@@ -43,7 +43,12 @@ function Invoke-DBVersionedMenu {
     Import-Module (Join-Path $PSScriptRoot 'Modules/Core/ConfigSync.psm1')
     $server = $env:COMPUTERNAME
     $server = if ($server) { $server.ToLowerInvariant() } else { [Environment]::MachineName.ToLowerInvariant() }
-    $answer = ([string] (Read-Host "Configuracoes versionadas (configuracoes/$server no repositorio): 1 = puxar do GitHub, 2 = exportar para commit, Enter = voltar")).Trim()
+    $answer = ([string] (Read-Host "Configuracoes (configuracoes/$server no repositorio): 1 = puxar do GitHub, 2 = exportar para commit, 3 = padronizar formatacao, Enter = voltar")).Trim()
+    if ($answer -eq '3') {
+        if (([string] (Read-Host 'Reescrever ambiente.psd1 e os config.psd1 no formato padrao? Os dados nao mudam; comentarios escritos a mao sao perdidos (copia em <arquivo>.anterior) (s/N)')).Trim() -notmatch '^(s|sim)$') { return }
+        & $pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Setup.ps1') -Format
+        return
+    }
     if ($answer -eq '2') {
         $exported = Export-DBVersionedConfiguration -InstallRoot $InstallRoot -Destination (Join-Path $InstallRoot 'Configuracoes-Exportadas') -ServerName $server
         "Exportado para $($exported.Path):" | Out-Host
@@ -90,7 +95,7 @@ while ($true) {
         '  6  Ultimos resultados'
         '  7  Ambiente do servidor (ferramentas e padroes)'
         '  8  Atualizar o DBBackup'
-        '  9  Configuracoes versionadas (puxar do GitHub / exportar)'
+        '  9  Configuracoes (puxar do GitHub, exportar, padronizar formatacao)'
         '  0  Sair'
         ''
     ) | Out-Host
