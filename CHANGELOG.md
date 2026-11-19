@@ -4,6 +4,24 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [2.2.3] - 2026-11-19
+
+### Corrigido
+
+- Menu, opção 7 (Ambiente): a validação sempre falhava com "Cannot bind
+  argument to parameter 'Path' because it is an empty string", mesmo com o
+  `ambiente.psd1` correto, porque a pasta `Instances` não chegava à checagem das
+  instâncias.
+
+### Alterado
+
+- `config.psd1` e `ambiente.psd1` são gravados com indentação de 4 espaços,
+  chaves sem aspas e ordem fixa, com listas simples e hashtables pequenas numa
+  linha.
+- Menu, opção 9: nova sub-opção "padronizar formatação", que reescreve os
+  arquivos existentes nesse formato sem mudar os dados. A cópia anterior fica
+  em `<arquivo>.anterior`.
+
 ## [2.2.2] - 2026-11-19
 
 ### Corrigido

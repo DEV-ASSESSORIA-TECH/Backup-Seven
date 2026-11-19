@@ -1,4 +1,4 @@
-# DBBackup — runbook v2.2.2
+# DBBackup — runbook v2.2.3
 
 ## Conceitos
 
@@ -53,7 +53,7 @@ DBBackup\
   6  Ultimos resultados
   7  Ambiente do servidor (ferramentas e padroes)
   8  Atualizar o DBBackup
-  9  Configuracoes versionadas (puxar do GitHub / exportar)
+  9  Configuracoes (puxar do GitHub, exportar, padronizar formatacao)
   0  Sair
 ```
 
@@ -523,6 +523,13 @@ repositório é público. Opção 9 do menu:
   diferença de cada arquivo. Depois de confirmar, grava os arquivos (a cópia
   anterior fica como `<arquivo>.anterior`) e valida tudo. Se algo estiver
   inválido, volta tudo como estava. Por fim, oferece aplicar.
+
+- **Padronizar formatação**: reescreve `ambiente.psd1` e os `config.psd1` no
+  formato padrão, sem mudar os dados: indentação de 4 espaços, chaves sem aspas,
+  ordem fixa (`Id`, `Provider`, `Database`… nos jobs; `Name`, `Mode`, `Jobs`,
+  `At`… nas tarefas), listas simples e hashtables pequenas numa linha. A cópia
+  anterior fica como `<arquivo>.anterior`. Comentários escritos à mão são
+  perdidos. O setup e o menu já gravam neste formato.
 
 O nome do servidor é o nome do computador em minúsculas. Detalhes em
 `configuracoes/README.md`.
