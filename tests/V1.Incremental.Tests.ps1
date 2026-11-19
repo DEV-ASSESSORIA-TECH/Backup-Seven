@@ -103,6 +103,17 @@ Describe 'SQL Anywhere incremental provider' {
         $r.Metadata.LogFiles | Should -Be @('demo.log')
         Should -Invoke Invoke-DBTool -ModuleName SQLAnywhere -Times 1 -Exactly -ParameterFilter { $Executable -eq 'dbbackup.exe' -and $Arguments[1] -eq '-t' -and $Arguments -notcontains '-r' }
     }
+    It 'reads the production log folder from the localized dbping table' {
+        $bin = Join-Path $script:Root 'bin'
+        $null = New-Item -ItemType Directory $bin
+        foreach ($name in 'dbbackup.exe', 'dbping.exe') { Set-Content (Join-Path $bin $name) 'x' }
+        $configuration = @{ Tools = @{ DbBackup = (Join-Path $bin 'dbbackup.exe') } }
+        $output = "SQL Anywhere - Utilitario de ping de servidor Versao 17.0.11.8360`r`nTipo       Propriedade                  Valor`r`n---------  ----------------          ------------------------------`r`nBanco de dados   LogName                   C:\Contabil\Dados\contabil.log`r`nO acesso ao banco de dados atraves do ping obteve exito.`r`n"
+        Mock Invoke-DBTool { [pscustomobject]@{ ExitCode = 0; StdOut = $output; StdErr = '' } } -ModuleName SQLAnywhere
+        Get-DBSqlAnywhereLogDirectory -Configuration $configuration -OptionsPath 'x.options' | Should -Be 'C:\Contabil\Dados'
+        Mock Invoke-DBTool { [pscustomobject]@{ ExitCode = 0; StdOut = "LogName: D:\Db\Logs\demo.LOG`n"; StdErr = '' } } -ModuleName SQLAnywhere
+        Get-DBSqlAnywhereLogDirectory -Configuration $configuration -OptionsPath 'x.options' | Should -Be 'D:\Db\Logs'
+    }
     It 'refuses an incremental without a base' {
         { Invoke-DBSqlAnywhere $script:C $script:J $script:R -Mode Incremental } | Should -Throw '*base*'
     }

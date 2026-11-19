@@ -4,6 +4,16 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [2.2.1] - 2026-11-19
+
+### Corrigido
+
+- Incremental do SQL Anywhere: a pasta do log de produção não era reconhecida
+  quando o `dbping -pd LogName` responde em tabela traduzida
+  (`Banco de dados   LogName   C:\...\contabil.log`). Com isso, os logs
+  renomeados (`AAMMDDxx.LOG`) não eram limpos. A pasta passa a ser gravada na
+  base no próximo backup completo.
+
 ## [2.2.0] - 2026-11-19
 
 ### Adicionado
