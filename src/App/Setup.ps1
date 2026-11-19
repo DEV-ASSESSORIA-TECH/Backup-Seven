@@ -3,7 +3,9 @@
 param([string] $ConfigPath, [string] $InstanceName,
     # <root>\Instances beside the App folder (<root>\App\Setup.ps1).
     [string] $InstancesRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Instances'),
-    [switch] $Apply, [switch] $Plan)
+    [switch] $Apply, [switch] $Plan,
+    # Editar-Configuracao.bat: open config.psd1 elevated, validate, then apply.
+    [switch] $Edit)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Setup.psm1') -Force
@@ -14,18 +16,22 @@ Import-Module (Join-Path $PSScriptRoot 'Modules/Core/Schedule.psm1')
 # tells the operator that nothing needs to be typed again.
 $savedConfigPath = $null
 try {
-    if ($Apply -and $Plan) { throw 'Choose -Apply or -Plan.' }
+    if (@($Apply, $Plan, $Edit | Where-Object { $_ }).Count -gt 1) { throw 'Choose -Apply, -Plan or -Edit.' }
     $InstancesRoot = [IO.Path]::GetFullPath($InstancesRoot)
     if (-not $Plan) {
         if (-not $IsWindows) { throw 'DBBackup setup requires Windows.' }
         $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Execute setup as Administrator.' }
     }
-    if ($Apply -or $Plan) {
-        if (-not $ConfigPath) { $ConfigPath = (Read-Host 'Caminho completo do config.psd1 existente').Trim('"') }
+    if ($Apply -or $Plan -or $Edit) {
+        if (-not $ConfigPath) { $ConfigPath = Select-DBConfigPath $InstancesRoot }
         $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
         if (-not (Test-DBPathWithin $ConfigPath $InstancesRoot)) { throw 'Configuration must be inside InstancesRoot.' }
         if (-not (Test-Path -LiteralPath $ConfigPath)) { throw 'Configuration does not exist.' }
+        if ($Edit) {
+            if (-not (Edit-DBConfiguration -ConfigPath $ConfigPath -InstancesRoot $InstancesRoot)) { exit 0 }
+            $Apply = [switch]::Present
+        }
         if ($Apply) { $savedConfigPath = $ConfigPath }
     }
     else {

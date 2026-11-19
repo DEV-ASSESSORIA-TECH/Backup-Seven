@@ -1,4 +1,4 @@
-# DBBackup — runbook v2.0.0
+# DBBackup — runbook v2.1.0
 
 ## Conceitos
 
@@ -15,7 +15,8 @@ Windows e PowerShell 7.2+ (instalador MSI; o da Microsoft Store fica em caminho
 que a tarefa SYSTEM pode não executar). 7-Zip, age e rclone instalados
 separadamente. MySQL precisa de mysql/mysqldump 5.x compatíveis com a origem.
 SQL Anywhere precisa somente de dbbackup 17 e suas bibliotecas; `dbping.exe` na
-mesma pasta é usado pelo teste de conexão do setup, se existir. O DBBackup não
+mesma pasta, se existir, é usado pelo teste de conexão do setup e pela
+estimativa de espaço da primeira execução. O DBBackup não
 instala dependências.
 
 1. Confira o SHA-256 do ZIP contra o `.zip.sha256`.
@@ -24,20 +25,27 @@ instala dependências.
 
 ```text
 DBBackup\
-  Setup.bat, Aplicar-Configuracao.bat, Diagnosticar.bat, Executar-Backup.bat
+  Setup.bat                           cria instância ou adiciona jobs
+  Editar-Configuracao.bat             abre o config.psd1 como Administrador, valida e aplica
+  Aplicar-Configuracao.bat            reaplica ACL, diagnóstico e tarefas
+  Diagnosticar.bat                    verificações locais
+  Executar-Backup.bat                 backup manual com andamento na tela
+  Atualizar.bat                       atualiza para a última versão do GitHub
   LEIA-ME.txt                         versão instalada e links
   App\                                scripts, módulos, modelo, VERSION
   Instances\<instância>\
-    config.psd1                        editável (ACL herdada da pasta)
+    config.psd1                        configuração (alterar com Editar-Configuracao.bat)
     Secrets\                          restrita a SYSTEM e Administradores
     Runtime\                          restrita (trabalho temporário, pendências)
   Completed\<instância>\<job>\        pacotes criptografados locais
   Logs\<instância>\                    um log por execução
+  Versoes-Anteriores\                 cópia de App e .bat antes de cada atualização
 ```
 
 Os `.bat` usam `%ProgramFiles%\PowerShell\7\pwsh.exe` ou, se não existir, o
-`pwsh.exe` do PATH. `Executar-Backup.bat` e `Diagnosticar.bat` pedem o caminho
-do `config.psd1` (aceitam o caminho colado com aspas).
+`pwsh.exe` do PATH, e pedem elevação. Os que agem sobre uma instância listam as
+instâncias de `Instances\`: com uma só, ela é escolhida direto; com várias,
+digite o número (um caminho completo de `config.psd1` também é aceito).
 
 ## Setup guiado
 
@@ -58,15 +66,23 @@ O `Setup.bat` pergunta e valida cada resposta na hora:
      `Secrets\<job>.cnf`/`.options`;
    - diretório: pasta de origem (caminho completo, fora da instância);
    - identificador do job (pasta no S3 e no Completed), bucket e prefixo
-     (Enter mantém a sugestão; `/` usa a raiz do bucket) e horário diário.
+     (Enter mantém a sugestão; `/` usa a raiz do bucket) e horários diários
+     (um ou vários, ex.: `12:30,19:00`).
    Ao concluir sem nenhum job de diretório, o setup pergunta se deseja
    adicionar backup de pasta.
-5. **Agenda**: jobs com o mesmo horário entram na mesma tarefa (`diario-HHmm`)
-   e rodam em sequência.
-6. **Teste opcional, somente leitura**: login em cada banco, existência de cada
+5. **Agenda**: jobs com os mesmos horários entram na mesma tarefa
+   (`diario-1900`, `diario-1230-1900`) e rodam em sequência.
+6. **Monitoramento**: publicar métricas para o Grafana Alloy (padrão Sim quando
+   a pasta do Alloy existe), serviço (sistema protegido, ex.: `seven`) e
+   `backup_id` de cada job. Para continuar as séries de uma versão anterior,
+   use os mesmos ids (ex.: `database`, `fiscal` da backup-seven 0.6).
+7. **Teste opcional, somente leitura**: login em cada banco, existência de cada
    pasta e listagem de cada destino S3. Nada é gravado no bucket.
-7. **Diagnóstico local**, plano das tarefas (confirmar com `SIM`) e resumo com
-   os jobs, destinos e o comando do primeiro backup.
+8. **Diagnóstico local**, plano das tarefas (confirmar com `SIM`) e resumo com
+   os jobs, destinos e o comando do primeiro backup. Tarefas de versões
+   anteriores (pastas `\DBBackup\<instância>\` da 1.x e `\BackupSeven\` da
+   0.x) são listadas com o script que executam, e removidas se você digitar
+   `SIM`.
 
 Para reaproveitar credenciais de uma instalação anterior, copie os arquivos para
 `Instances\<instância>\Secrets\` antes de rodar o setup. Se algo falhar depois
@@ -78,11 +94,18 @@ caminho do `config.psd1`; nada precisa ser digitado de novo.
 Somente `Secrets` e `Runtime` são restritas a SYSTEM e Administradores:
 `Secrets` tem senhas e chaves em texto; `Runtime` tem dumps sem criptografia
 durante a execução e pacotes pendentes. A pasta da instância e o `config.psd1`
-herdam a permissão da instalação e podem ser editados sem elevação; o setup
-restaura essa herança em instâncias criadas pela 1.x. `Completed` (pacotes
-criptografados) e `Logs` (sem senhas) são pastas de operação, com a permissão
-herdada. Uma execução nunca altera permissões de pastas existentes; o Apply
-recusa um `Runtime` existente com conteúdo e permissões de terceiros.
+herdam a permissão da instalação (o setup restaura essa herança em instâncias
+criadas pela 1.x). Na instalação típica a herança permite leitura a usuários e
+escrita só a Administradores, e isso é intencional: a tarefa roda como SYSTEM os
+executáveis indicados em `Tools`, então quem altera o `config.psd1` precisa ser
+administrador. Por isso o Bloco de Notas aberto sem elevação só oferece "Salvar
+como"; use **`Editar-Configuracao.bat`**.
+
+`Completed` (pacotes criptografados) e `Logs` (sem senhas) são pastas de
+operação, com a permissão herdada. Uma execução nunca altera permissões de
+pastas existentes. O Apply torna privado o `Runtime` da instância (padrão
+`Instances\<instância>\Runtime`) mesmo que tenha herdado permissões; um
+`Runtime` configurado fora da instância precisa já ser privado ou estar vazio.
 
 ## Configuração (`config.psd1`, schema 2)
 
@@ -100,14 +123,23 @@ recusa um `Runtime` existente com conteúdo e permissões de terceiros.
         @{ Id = 'documentos'; Provider = 'Directory'; SourcePath = 'D:\Documentos'; RemoteRoot = 's3:<bucket>/ASSESSORIA' }
     )
     Schedule = @{ Tasks = @(
-        @{ Name = 'diario-1900'; Jobs = @('seven','dominio'); At = '19:00'; Frequency = 'Daily' }
+        @{ Name = 'diario-1230-1900'; Jobs = @('seven','dominio'); At = @('12:30','19:00'); Frequency = 'Daily' }
         @{ Name = 'semanal-docs'; Jobs = @('documentos'); At = '03:00'; Frequency = 'Weekly'; Days = @('Saturday') }
     ) }
     # Storage, Encryption, Archive, Retention, Execution, Monitoring: ver App\Templates\config.example.psd1
 }
 ```
 
-Depois de editar, rode `Aplicar-Configuracao.bat`. Ids de job são únicos na
+Para alterar, use **`Editar-Configuracao.bat`**: ele escolhe a instância, abre
+o `config.psd1` no Bloco de Notas como Administrador, espera você salvar e
+fechar, valida o arquivo e pergunta se aplica. Se o arquivo ficar inválido, ele
+oferece abrir de novo ou voltar ao conteúdo anterior; enquanto estiver inválido,
+os backups agendados terminam com código 2. Uma alteração feita de outro jeito
+precisa de `Aplicar-Configuracao.bat` para chegar às tarefas.
+
+`At` aceita um horário (`'19:00'`) ou vários (`@('12:30','19:00')`): a tarefa
+ganha um disparo por horário e roda os mesmos jobs em cada um. Ids de job são
+únicos na
 instância (sem diferenciar maiúsculas; `logs` é reservado). `Paths` é opcional:
 o padrão é `Runtime` na instância e `Completed`/`Logs` na raiz da instalação,
 uma subpasta por instância.
@@ -243,8 +275,9 @@ prazo arredondado para horas mais uma hora; reaplique após alterá-lo. Pastas s
 arquivadas no lugar (sem cópia para Work); um arquivo alterado durante a
 execução pode diferir do hash do manifesto. Com `EstimatedDatabaseBytes = 0`, a
 estimativa de espaço vem do último payload do job (+25%) ou, no MySQL, do
-tamanho em information_schema (+25%); o SQL Anywhere na primeira execução só
-verifica a reserva.
+tamanho em information_schema (+25%) ou, no SQL Anywhere, de
+`dbping -d -pd FileSize,PageSize` (+25%), se o `dbping.exe` estiver ao lado do
+`dbbackup.exe` e responder; sem estimativa, só a reserva é verificada.
 
 ```powershell
 Monitoring = @{
@@ -293,11 +326,18 @@ mesma tarefa.
 
 ## Execução e interpretação
 
+`Executar-Backup.bat` escolhe a instância, mostra os jobs e pergunta quais
+executar (Enter = todos). Cada linha do log aparece na janela enquanto o backup
+roda (`Step 1/4` backup, `2/4` compactação, `3/4` criptografia, `4/4` envio), e
+a janela termina com o resultado. Pela linha de comando:
+
 ```powershell
 & pwsh -File .\App\Backup.ps1 -ConfigPath .\Instances\assessoria\config.psd1 -All
 & pwsh -File .\App\Backup.ps1 -ConfigPath .\Instances\assessoria\config.psd1 -Job seven,documentos
 ```
 
+As ferramentas externas rodam sem entrada (stdin fechado): uma ferramenta que
+pediria senha ou confirmação falha na hora, em vez de esperar até o timeout.
 A falha de um job não impede os demais. O log da execução fica em
 `Logs\<instância>\<data_hora>.log` e **termina sempre com uma linha
 `RESULTADO`**, por exemplo:
@@ -332,15 +372,55 @@ externo ao projeto.
 
 ## Atualização e migração
 
-Entre versões 2.x: pare as execuções, confira o checksum, substitua `App\` e os
-`.bat`, e preserve `Instances`, `Completed` e `Logs`. Rode
-`Aplicar-Configuracao.bat` para cada instância se o CHANGELOG pedir.
+### Atualizar (2.1 em diante): `Atualizar.bat`
+
+1. Rode **`Atualizar.bat`** (pede elevação). Ele consulta a última release no
+   GitHub e mostra a versão instalada e a disponível.
+2. Confirme. Ele baixa o ZIP e o `.sha256`, confere o checksum e verifica que o
+   pacote só tem `App\`, `.bat` e `LEIA-ME.txt`.
+3. Se algum backup estiver em execução, ele para sem alterar nada (código 3);
+   rode de novo depois.
+4. Ele guarda a versão atual em `Versoes-Anteriores\<versão>_<data>\` (as três
+   mais recentes são mantidas), substitui `App\` e os arquivos da raiz e, se algo
+   falhar no meio, restaura a versão anterior sozinho.
+5. Por fim, oferece reaplicar a configuração de cada instância com a versão
+   nova (recomendado: as tarefas são conferidas e só mudam com `SIM`).
+
+`Instances` (configurações, `Secrets`, `Runtime`), `Completed` e `Logs` nunca são
+tocados. Para voltar a uma versão anterior, copie o conteúdo de
+`Versoes-Anteriores\<versão>_<data>\` para a raiz da instalação.
+
+Sem internet: baixe `DBBackup-X.Y.Z.zip` e `DBBackup-X.Y.Z.zip.sha256` da página
+de releases, coloque os dois na mesma pasta e arraste o ZIP sobre o
+`Atualizar.bat`. O checksum é conferido se o `.sha256` estiver ao lado.
+
+### Atualizar manualmente (e da 2.0.0 para a 2.1.0)
+
+A 2.0.0 não tem o `Atualizar.bat`; a primeira atualização é manual. Depois
+disso, use o `Atualizar.bat`.
+
+1. Confira se nenhum backup está em execução.
+2. Confira o SHA-256 do ZIP e extraia numa pasta temporária, por exemplo
+   `C:\TI\Temp\DBBackup-2.1.0`.
+3. Copie para a instalação (o pacote não contém `Instances`, `Completed` nem
+   `Logs`, então nada disso é sobrescrito):
+
+   ```bat
+   robocopy C:\TI\Temp\DBBackup-2.1.0\App C:\TI\Scripts\DBBackup\App /MIR
+   robocopy C:\TI\Temp\DBBackup-2.1.0 C:\TI\Scripts\DBBackup *.bat LEIA-ME.txt
+   ```
+
+   O primeiro comando espelha `App\` (remove módulos que deixaram de existir); o
+   segundo copia só os arquivos da raiz.
+4. Rode `Aplicar-Configuracao.bat` para cada instância e apague a pasta
+   temporária.
 
 Da 1.x para a 2.0: os arquivos de configuração mudaram (schema 2). Extraia a 2.0
 numa pasta nova, copie os arquivos de `Secrets` da instância antiga para
 `Instances\<instância>\Secrets\` e rode o `Setup.bat`: ele oferece reaproveitar
 `rclone.conf`, `recipients.txt` e as credenciais de banco. Remova as tarefas da
-1.x no Agendador depois de conferir a 2.0. Pacotes e logs antigos não são
+1.x depois de conferir a 2.0 (a partir da 2.1, o Apply lista essas tarefas e
+oferece removê-las). Pacotes e logs antigos não são
 migrados; mantenha-os pelo tempo necessário.
 
 ## Build e release

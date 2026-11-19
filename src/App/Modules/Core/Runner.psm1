@@ -99,7 +99,7 @@ function Invoke-DBBackup {
                 $estimate = Get-DBJobSpaceEstimate -Configuration $c -Job $j
                 if ($estimate.Source -eq 'unknown') {
                     try {
-                        $probed = Get-DBProviderSizeEstimate -Configuration $c -Job $j
+                        $probed = Get-DBProviderSizeEstimate -Configuration $c -Job $j -Runtime $runtime
                         if ($null -ne $probed -and [long] $probed -gt 0) {
                             $estimate = [pscustomobject]@{ Bytes = [long] ([decimal] $probed * 1.25); Source = 'provider-probe+25%'; Warning = $estimate.Warning }
                         }
@@ -110,6 +110,8 @@ function Invoke-DBBackup {
                 if ($estimate.Source -eq 'unknown') { Write-DBLog $runtime.LogPath $j.Id 'No space estimate is available; only ReserveBytes is checked. Set Execution.EstimatedDatabaseBytes.' 'WARN' }
                 Write-DBLog $runtime.LogPath $j.Id "Space estimate: $($estimate.Bytes) bytes ($($estimate.Source))."
                 Assert-DBFreeSpace -Path $runtime.Work -RequiredBytes $estimate.Bytes -ReserveBytes $c.Execution.ReserveBytes
+                $source = if ($j.Provider -eq 'Directory') { $j.SourcePath } else { "database $($j.Database)" }
+                Write-DBLog $runtime.LogPath $j.Id "Step 1/4: $($j.Provider) backup of $source started."
                 $result = Invoke-DBProvider -Configuration $c -Job $j -Runtime $runtime
                 if ($result.Status -eq 'SUCCESS' -and $j.Provider -ne 'Directory') {
                     try {

@@ -20,7 +20,7 @@ Describe 'DBBackup distribution' {
         $actual | Should -Be $expected
         $actual -join "`n" | Should -Not -Match '(^|/)(Secrets|Instances|Runtime|Completed|Logs)/|Restore\.ps1|Recovery\.ps1|\.exe$|\.log$'
         $actual -join "`n" | Should -Not -Match '(?i)README|RUNBOOK|ARCHITECTURE|CHANGELOG|contracts/|PACKAGE-MANIFEST'
-        @($actual | Where-Object { $_ -notmatch '/' } | Sort-Object) | Should -Be @('Aplicar-Configuracao.bat','Diagnosticar.bat','Executar-Backup.bat','LEIA-ME.txt','Setup.bat')
+        @($actual | Where-Object { $_ -notmatch '/' } | Sort-Object) | Should -Be @('Aplicar-Configuracao.bat','Atualizar.bat','Diagnosticar.bat','Editar-Configuracao.bat','Executar-Backup.bat','LEIA-ME.txt','Setup.bat')
         $actual | Should -Contain 'App/VERSION'
         $actual | Should -Contain 'App/Modules/Core/Observation.psm1'
         $actual | Should -Contain 'App/Templates/config.example.psd1'
@@ -35,7 +35,7 @@ Describe 'DBBackup distribution' {
         $text | Should -Not -Match '(?<!\r)\n'
     }
     It 'ships valid CRLF batch launchers pointing to the scripts under App' {
-        $map=@{ 'Setup.bat'='App\\Setup.ps1'; 'Aplicar-Configuracao.bat'='App\\Setup.ps1" -Apply'; 'Diagnosticar.bat'='App\\Diagnose.ps1'; 'Executar-Backup.bat'='App\\Backup.ps1' }
+        $map=@{ 'Setup.bat'='App\\Setup.ps1'; 'Aplicar-Configuracao.bat'='App\\Setup.ps1" -Apply'; 'Editar-Configuracao.bat'='App\\Setup.ps1" -Edit'; 'Diagnosticar.bat'='App\\Diagnose.ps1'; 'Executar-Backup.bat'='App\\Backup.ps1" -Interactive'; 'Atualizar.bat'='App\\Update.ps1' }
         foreach ($name in $map.Keys) {
             $reader=[IO.StreamReader]::new($script:Zip.GetEntry($name).Open())
             try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }
@@ -47,7 +47,7 @@ Describe 'DBBackup distribution' {
     It 'loads entrypoints and provider modules from the extracted package' {
         $root=Join-Path $TestDrive 'extracted'
         [IO.Compression.ZipFile]::ExtractToDirectory($script:Archive.FullName,$root)
-        foreach ($name in @('Backup.ps1','Setup.ps1','Diagnose.ps1')) {
+        foreach ($name in @('Backup.ps1','Setup.ps1','Diagnose.ps1','Update.ps1')) {
             $null=Get-Command (Join-Path $root "App/$name") -ErrorAction Stop
         }
         # Parse/import in a separate process: no provider/diagnostic is invoked.

@@ -85,10 +85,20 @@ function New-DBRuntime {
     catch { $lock.Dispose(); throw }
 }
 
+# Process-wide switch (like the tool deadline): Executar-Backup.bat shows each
+# log line in its window; scheduled runs only write the file.
+$script:ConsoleLogKey = 'DBBackup.ConsoleLog'
+
+function Set-DBConsoleLog {
+    param([bool] $Enabled)
+    [AppDomain]::CurrentDomain.SetData($script:ConsoleLogKey, $Enabled)
+}
+
 function Write-DBLog {
     param([string] $Path, [string] $Stage, [string] $Message, [ValidateSet('INFO','WARN','ERROR')][string] $Level = 'INFO')
     $line = '{0} [{1}] [{2}] {3}' -f [DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'), $Level, $Stage, (Protect-DBMessage $Message)
     [IO.File]::AppendAllText($Path, $line + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    if ([AppDomain]::CurrentDomain.GetData($script:ConsoleLogKey) -eq $true) { $line | Out-Host }
 }
 
 function Clear-DBStaleRuntime {
@@ -133,4 +143,4 @@ function Close-DBRuntime {
     finally { $Runtime.Lock.Dispose() }
 }
 
-Export-ModuleMember -Function Protect-DBMessage, Test-DBPrivateAccess, Set-DBPrivateDirectory, New-DBRuntime, Write-DBLog, Clear-DBStaleRuntime, Close-DBRuntime
+Export-ModuleMember -Function Set-DBConsoleLog, Protect-DBMessage, Test-DBPrivateAccess, Set-DBPrivateDirectory, New-DBRuntime, Write-DBLog, Clear-DBStaleRuntime, Close-DBRuntime

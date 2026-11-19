@@ -42,16 +42,31 @@ function Get-DBScheduleTask {
         foreach ($key in $entry.Keys) {
             if ($key -notin @('Name','Jobs','At','Frequency','Days','DaysOfMonth','Enabled')) { throw "Unknown schedule key: $key" }
         }
-        foreach ($key in @('Name','Jobs','At')) { if (-not $entry.Contains($key)) { throw "Missing schedule field: $key" } }
+        foreach ($key in @('Name','Jobs','At')) { if (-not $entry.Contains($key)) { throw "Missing schedule field: $key (Schedule.Tasks precisa de Name, Jobs e At)" } }
         Assert-DBIdentifier $entry.Name
-        if ($names.ContainsKey($entry.Name)) { throw 'Duplicate task name.' }
+        if ($names.ContainsKey($entry.Name)) { throw "Duplicate task name: $($entry.Name)." }
         $names[$entry.Name] = $true
         # Jobs of one task run one after another in the same execution.
         $taskJobs = @($entry.Jobs | ForEach-Object { [string] $_ })
         if ($taskJobs.Count -eq 0) { throw "Schedule task $($entry.Name) has no jobs." }
-        foreach ($jobId in $taskJobs) { if ($jobId -cnotin @($Configuration.Jobs.Id)) { throw "Unknown schedule job: $jobId" } }
+        $configured = @($Configuration.Jobs | ForEach-Object { [string] $_.Id })
+        foreach ($jobId in $taskJobs) {
+            if ($jobId -cin $configured) { continue }
+            # Job IDs are case-sensitive; point at the likely intended one.
+            $similar = @($configured | Where-Object { $_ -ieq $jobId })
+            $hint = if ($similar.Count) { " Maiusculas e minusculas importam: use '$($similar[0])'." } else { '' }
+            throw "Unknown schedule job: tarefa '$($entry.Name)' cita o job '$jobId', que nao existe nesta instancia.$hint Jobs configurados: $($configured -join ', ')."
+        }
         if (@($taskJobs | Select-Object -Unique).Count -ne $taskJobs.Count) { throw "Schedule task $($entry.Name) repeats a job." }
-        if ($entry.At -notmatch '^([01]\d|2[0-3]):[0-5]\d$') { throw 'Invalid schedule time.' }
+        # At is one time or a list of times ('12:30' or @('12:30','19:00')):
+        # each time becomes a trigger of the same task.
+        $times = @($entry.At | ForEach-Object { [string] $_ })
+        if ($times.Count -eq 0) { throw "Invalid schedule time: tarefa '$($entry.Name)' sem horario em At." }
+        foreach ($time in $times) {
+            if ($time -notmatch '^([01]\d|2[0-3]):[0-5]\d$') { throw "Invalid schedule time: tarefa '$($entry.Name)', horario '$time' (use HH:mm, por exemplo '19:00' ou @('12:30', '19:00'))." }
+        }
+        if (@($times | Select-Object -Unique).Count -ne $times.Count) { throw "Invalid schedule time: tarefa '$($entry.Name)' repete um horario." }
+        $times = @($times | Sort-Object)
         $frequency = if ($entry.Contains('Frequency')) { [string] $entry.Frequency } else { 'Daily' }
         if ($frequency -cnotin @('Daily','Weekly','Monthly')) { throw 'Invalid schedule frequency.' }
         $days = @()
@@ -76,7 +91,7 @@ function Get-DBScheduleTask {
             $enabled = $entry.Enabled
         }
         $registered = Get-DBTaskRegisteredName -InstanceName $Configuration.InstanceName -TaskName $entry.Name
-        $result += [pscustomobject]@{Name=$entry.Name;RegisteredName=$registered;Jobs=$taskJobs;At=$entry.At;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled}
+        $result += [pscustomobject]@{Name=$entry.Name;RegisteredName=$registered;Jobs=$taskJobs;At=$times;Frequency=$frequency;Days=$days;DaysOfMonth=$monthDays;Enabled=$enabled}
     }
     return $result
 }
@@ -114,7 +129,7 @@ function Get-DBScheduleMaxGap {
         $date = $start.AddDays($offset)
         foreach ($task in $covering) {
             if (Test-DBScheduleRunsOn -Task $task -Date $date) {
-                $runs.Add($date.Add([TimeSpan]::Parse($task.At, [System.Globalization.CultureInfo]::InvariantCulture)))
+                foreach ($time in @($task.At)) { $runs.Add($date.Add([TimeSpan]::Parse($time, [System.Globalization.CultureInfo]::InvariantCulture))) }
             }
         }
     }
@@ -145,8 +160,10 @@ function Get-DBScheduleNextRun {
         $date = $After.Date.AddDays($offset)
         foreach ($task in $covering) {
             if (-not (Test-DBScheduleRunsOn -Task $task -Date $date)) { continue }
-            $run = $date.Add([TimeSpan]::Parse($task.At, [System.Globalization.CultureInfo]::InvariantCulture))
-            if ($run -gt $After -and ($null -eq $next -or $run -lt $next)) { $next = $run }
+            foreach ($time in @($task.At)) {
+                $run = $date.Add([TimeSpan]::Parse($time, [System.Globalization.CultureInfo]::InvariantCulture))
+                if ($run -gt $After -and ($null -eq $next -or $run -lt $next)) { $next = $run }
+            }
         }
     }
     return $next
@@ -158,7 +175,8 @@ function Get-DBScheduleWarning {
     param([Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Tasks)
 
     $warnings = @()
-    foreach ($group in @($Tasks | Where-Object Enabled | Group-Object At | Where-Object Count -gt 1)) {
+    $starts = @(foreach ($task in @($Tasks | Where-Object Enabled)) { foreach ($time in @($task.At)) { [pscustomobject]@{ At = $time; Name = $task.Name } } })
+    foreach ($group in @($starts | Group-Object At | Where-Object Count -gt 1)) {
         $warnings += "Tarefas no mesmo horario ($($group.Name)): $(($group.Group.Name) -join ', '). So uma roda; as outras terminam com exit code 3."
     }
     return $warnings
@@ -190,13 +208,19 @@ function Get-DBTaskDefinition {
     }
     $enabled = if ($Task.Enabled) { 'true' } else { 'false' }
 
-    $body = @"
-  <Triggers>
+    # One calendar trigger per time; a single time keeps the 2.0 XML.
+    $triggers = (@($Task.At) | ForEach-Object {
+        @"
     <CalendarTrigger>
-      <StartBoundary>2026-01-01T$($Task.At):00</StartBoundary>
+      <StartBoundary>2026-01-01T$($_):00</StartBoundary>
       <Enabled>true</Enabled>
       $schedule
     </CalendarTrigger>
+"@
+    }) -join "`n"
+    $body = @"
+  <Triggers>
+$triggers
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -392,4 +416,47 @@ function Invoke-DBSchedulePlan {
     }
 }
 
-Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBTaskRegisteredName, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, ConvertTo-DBSchedulerFolderPath, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun, Get-DBTaskExecutionLimit
+function Get-DBLegacyTask {
+    <#
+    Tasks registered by earlier versions that are not managed by 2.x: the
+    per-instance folders \DBBackup\<instance>\ (1.x) and \BackupSeven\ (0.x).
+    Only tasks whose action runs a Backup*.ps1 script are returned.
+    #>
+    $service = New-DBSchedulerService
+    $folders = @()
+    foreach ($path in @('\DBBackup', '\BackupSeven')) {
+        try { $folder = $service.GetFolder($path) }
+        catch {
+            if (Test-DBMissingTaskFolder $_.Exception) { continue }
+            throw
+        }
+        if ($path -eq '\BackupSeven') { $folders += $folder }
+        $folders += @($folder.GetFolders(0))
+    }
+    foreach ($folder in $folders) {
+        foreach ($task in @($folder.GetTasks(1))) {
+            try { [xml] $xml = $task.Xml } catch { continue }
+            $arguments = (@($xml.Task.Actions.Exec) | ForEach-Object { [string] $_.Arguments }) -join ' '
+            if ($arguments -match '(?i)Backup[^\\/"]*\.ps1') {
+                [pscustomobject]@{ Folder = [string] $folder.Path; Name = [string] $task.Name; Arguments = $arguments }
+            }
+        }
+    }
+}
+
+function Remove-DBLegacyTask {
+    <# Deletes the given legacy tasks, then each of their folders left empty. #>
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Task)
+    $service = New-DBSchedulerService
+    foreach ($item in $Task) { $service.GetFolder($item.Folder).DeleteTask($item.Name, 0) }
+    foreach ($path in @($Task | ForEach-Object Folder | Select-Object -Unique)) {
+        $folder = $service.GetFolder($path)
+        if (@($folder.GetTasks(1)).Count -or @($folder.GetFolders(0)).Count) { continue }
+        # Scheduler paths always use '\' (also when tests run off Windows).
+        $index = $path.LastIndexOf('\')
+        $parentPath = if ($index -le 0) { '\' } else { $path.Substring(0, $index) }
+        $service.GetFolder($parentPath).DeleteFolder($path.Substring($index + 1), 0)
+    }
+}
+
+Export-ModuleMember -Function Get-DBTaskOwner, Get-DBTaskFolder, Get-DBTaskRegisteredName, Get-DBScheduleTask, Get-DBTaskDefinition, Get-DBSchedulePlan, ConvertTo-DBSchedulerFolderPath, Get-DBSchedulerSnapshot, Invoke-DBSchedulePlan, Get-DBScheduleWarning, Get-DBScheduleMaxGap, Get-DBScheduleNextRun, Get-DBTaskExecutionLimit, Get-DBLegacyTask, Remove-DBLegacyTask

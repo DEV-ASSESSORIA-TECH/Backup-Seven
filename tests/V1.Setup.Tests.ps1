@@ -193,7 +193,7 @@ Describe 'Guided setup 2.0' {
             'Bucket S3*'=(Q @('Bucket_Invalido','assessoriatech-backups-seven-prod',''))
             'Prefixo*'=''
             'Pasta a copiar*'=$script:Docs
-            'Horario diario*'=(Q @('19:00','19:00'))
+            'Horarios diarios*'=(Q @('19:00','19:00'))
         })
         $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
         $c=Read-DBConfiguration $path
@@ -226,7 +226,7 @@ Describe 'Guided setup 2.0' {
         $script:Answers=New-AnswerSet ([ordered]@{
             'Adicionar job*'=(Q @('1','')); 'Adicionar backup de diretorio*'=''
             'Nome do banco MySQL*'='a_estoque'; 'Identificador do job*'=''
-            'Bucket S3*'='bucket-x'; 'Prefixo*'='ASSESSORIA'; 'Horario diario*'='02:30'
+            'Bucket S3*'='bucket-x'; 'Prefixo*'='ASSESSORIA'; 'Horarios diarios*'='02:30'
         })
         $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
         $c=Read-DBConfiguration $path
@@ -246,7 +246,7 @@ Describe 'Guided setup 2.0' {
         $script:Answers=New-AnswerSet ([ordered]@{
             'Encontrado Secrets\rclone.conf*'='n'
             'Adicionar job*'=(Q @('3','')); 'Pasta a copiar*'=$script:Docs; 'Identificador do job*'=''
-            'Bucket S3*'='bucket-x'; 'Prefixo*'=''; 'Horario diario*'=''
+            'Bucket S3*'='bucket-x'; 'Prefixo*'=''; 'Horarios diarios*'=''
         })
         $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
         Get-Content (Join-Path $secrets 'rclone.conf.old') -Raw | Should -Match 'old = 1'
@@ -259,7 +259,7 @@ Describe 'Guided setup 2.0' {
             'Nome do banco SQL Anywhere*'='contabil'; 'Identificador do job*'=(Q @('dominio','arquivos'))
             'Servidor em rede*'=''; 'Nome do servidor local*'='srv_dominio'; 'Usuario de backup*'='dba'
             'Pasta a copiar*'=$script:Docs
-            'Bucket S3*'=(Q @('bucket-dominio','bucket-arquivos')); 'Prefixo*'=''; 'Horario diario*'=(Q @('19:00','22:00'))
+            'Bucket S3*'=(Q @('bucket-dominio','bucket-arquivos')); 'Prefixo*'=''; 'Horarios diarios*'=(Q @('19:00','22:00'))
         })
         $path=Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria'
         $c=Read-DBConfiguration $path
@@ -283,7 +283,7 @@ Describe 'Guided setup 2.0' {
         Set-Content (Join-Path $other 'config.psd1') (Get-DBTestConfigText -RemoteRoot 's3:bucket-x/ASSESSORIA' -InstanceName 'outra')
         $script:Answers=New-AnswerSet ([ordered]@{
             'Adicionar job*'=(Q @('3','')); 'Pasta a copiar*'=$script:Docs; 'Identificador do job*'='database'
-            'Bucket S3*'='bucket-x'; 'Prefixo*'='ASSESSORIA'; 'Horario diario*'=''; 'Adicionar backup de diretorio*'=''
+            'Bucket S3*'='bucket-x'; 'Prefixo*'='ASSESSORIA'; 'Horarios diarios*'=''; 'Adicionar backup de diretorio*'=''
         })
         { Invoke-DBInteractiveSetup -InstancesRoot $script:Instances -TemplateRoot $script:Templates -InstanceName 'assessoria' } | Should -Throw '*remote destination*'
         Test-Path (Join-Path $script:Instances 'assessoria/config.psd1') | Should -BeFalse

@@ -18,9 +18,13 @@ function Invoke-DBProvider {
 
 function Get-DBProviderSizeEstimate {
     <# Cheap provider-side size probe in bytes, or $null when the provider has none. #>
-    param([Collections.IDictionary] $Configuration, $Job)
+    param([Collections.IDictionary] $Configuration, $Job, $Runtime)
     switch ($Job.Provider) {
         MySQL { return Get-DBMySqlSizeEstimate -Configuration $Configuration -Job $Job }
+        SQLAnywhere {
+            Import-Module (Join-Path $PSScriptRoot 'SQLAnywhere/SQLAnywhere.psm1')
+            return Get-DBSqlAnywhereSizeEstimate -Configuration $Configuration -Job $Job -Runtime $Runtime
+        }
         default { return $null }
     }
 }

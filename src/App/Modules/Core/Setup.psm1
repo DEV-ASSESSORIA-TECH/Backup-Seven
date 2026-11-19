@@ -175,6 +175,9 @@ function Test-DBInstance {
         if ($connection.DBN -cne $job.Database) { throw "Job $($job.Id): SQL DBN must match the job Database." }
     }
     $null = Assert-DBBackupDependency -Configuration $Configuration -Jobs $Configuration.Jobs
+    if (-not $Configuration.Monitoring.Enabled -and (Test-Path -LiteralPath 'C:\ProgramData\GrafanaLabs\Alloy\textfile' -PathType Container)) {
+        Write-Warning 'O Grafana Alloy esta instalado, mas esta instancia nao publica metricas (Monitoring.Enabled = $false). Ative com Editar-Configuracao.bat.'
+    }
     foreach ($path in $Configuration.Paths.Values) { Assert-DBFreeSpace -Path $path -RequiredBytes 0 -ReserveBytes $Configuration.Execution.ReserveBytes }
     [pscustomobject]@{Instance=$Configuration.InstanceName;Jobs=@($Configuration.Jobs.Id);Status='LOCAL_CHECKS_OK';RemoteDatabaseChecked=$false}
 }
@@ -358,7 +361,7 @@ function Read-DBDestination {
 
 function Read-DBJob {
     <#
-    Asks one job of the given provider and returns @{ Job = <hashtable>; At = 'HH:mm' }.
+    Asks one job of the given provider and returns @{ Job = <hashtable>; At = @('HH:mm', ...) }.
     Database credentials found in Secrets are offered before asking new ones.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'InstanceRoot', Justification = 'Read by the SourcePath validation scriptblock.')]
@@ -416,21 +419,42 @@ function Read-DBJob {
         if ($Provider -eq 'MySQL') { $job.ExtraArguments = @('--skip-events') }
     }
     $job.RemoteRoot = Read-DBDestination -RemoteName $RemoteName -DefaultBucket $DefaultBucket -DefaultPrefix $DefaultPrefix -JobId $job.Id
-    $at = Read-DBRequiredValue 'Horario diario deste job (HH:mm)' '19:00' {
+    $times = Read-DBRequiredValue 'Horarios diarios deste job (HH:mm; varios separados por virgula, ex.: 12:30,19:00)' '19:00' {
         param($value)
-        if ($value -notmatch '^([01]\d|2[0-3]):[0-5]\d$') { throw 'Use o formato HH:mm, por exemplo 19:00.' }
+        $list = @(ConvertTo-DBTimeList $value)
+        if (-not $list.Count) { throw 'Informe ao menos um horario.' }
     }
-    return @{ Job = $job; At = $at; Credential = $credential }
+    return @{ Job = $job; At = @(ConvertTo-DBTimeList $times); Credential = $credential }
+}
+
+function ConvertTo-DBTimeList {
+    <# '19:00' or '12:30, 19:00' -> sorted unique HH:mm list; throws on an invalid time. #>
+    param([string] $Text)
+    $times = @($Text -split '[,;\s]+' | Where-Object { $_ })
+    foreach ($time in $times) { if ($time -notmatch '^([01]\d|2[0-3]):[0-5]\d$') { throw "Horario invalido: $time. Use HH:mm, por exemplo 19:00." } }
+    return @($times | Sort-Object -Unique)
 }
 
 function Add-DBScheduledJob {
-    <# Puts a job in the daily task of its time (diario-HHmm), creating it when needed. #>
-    param([Collections.IDictionary] $Data, [string] $JobId, [string] $At)
+    <#
+    Puts a job in the daily task with exactly its times (diario-HHmm or
+    diario-HHmm-HHmm...), creating the task when needed. One time is saved as
+    At = 'HH:mm', several as At = @('HH:mm', ...).
+    #>
+    param([Collections.IDictionary] $Data, [string] $JobId, [string[]] $At)
     if (-not $Data.Contains('Schedule') -or $Data.Schedule -isnot [Collections.IDictionary]) { $Data.Schedule = @{ Tasks = @() } }
+    $times = @($At | Sort-Object -Unique)
+    $key = $times -join ','
     $tasks = @($Data.Schedule.Tasks)
-    $match = @($tasks | Where-Object { $_ -is [Collections.IDictionary] -and $_.At -eq $At -and (-not $_.Contains('Frequency') -or $_.Frequency -ceq 'Daily') })
+    $match = @($tasks | Where-Object {
+        $_ -is [Collections.IDictionary] -and (@($_.At | ForEach-Object { [string] $_ } | Sort-Object -Unique) -join ',') -eq $key -and
+        (-not $_.Contains('Frequency') -or $_.Frequency -ceq 'Daily')
+    })
     if ($match.Count -gt 0) { $match[0].Jobs = @($match[0].Jobs) + $JobId }
-    else { $tasks += @{ Name = "diario-$($At.Replace(':',''))"; Jobs = @($JobId); At = $At; Frequency = 'Daily'; Enabled = $true } }
+    else {
+        $value = if ($times.Count -eq 1) { $times[0] } else { $times }
+        $tasks += @{ Name = 'diario-' + (($times | ForEach-Object { $_.Replace(':', '') }) -join '-'); Jobs = @($JobId); At = $value; Frequency = 'Daily'; Enabled = $true }
+    }
     $Data.Schedule.Tasks = $tasks
 }
 
@@ -454,6 +478,35 @@ function Save-DBConfigurationData {
     finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
     Restore-DBInheritedAccess $directory
     Restore-DBInheritedAccess $ConfigPath
+}
+
+function Read-DBMonitoring {
+    <#
+    Metrics for Grafana Alloy (textfile). Suggested when the Alloy textfile
+    folder exists on this host. Service is the protected system (seven,
+    dominio); a backup_id per job keeps the series of an earlier version when
+    reused (e.g. 'database' and 'fiscal' of backup-seven 0.6).
+    #>
+    param([Collections.IDictionary] $Data, [string] $InstanceName)
+    if (-not $Data.Contains('Monitoring') -or $Data.Monitoring -isnot [Collections.IDictionary]) { $Data.Monitoring = @{ Enabled = $false } }
+    $m = $Data.Monitoring
+    if (-not $m.Contains('TextfileDirectory') -or -not $m.TextfileDirectory) { $m.TextfileDirectory = 'C:\ProgramData\GrafanaLabs\Alloy\textfile\backup' }
+    $alloy = Test-Path -LiteralPath $m.TextfileDirectory -PathType Container
+    $default = [bool] ($m.Contains('Enabled') -and $m.Enabled -eq $true) -or $alloy
+    if (-not (Read-DBConfirmation 'Publicar metricas dos backups para o Grafana Alloy?' $default)) { $m.Enabled = $false; return }
+    $m.Enabled = $true
+    $m.TextfileDirectory = Read-DBRequiredValue 'Pasta textfile do Alloy' $m.TextfileDirectory {
+        param($value)
+        if (-not [IO.Path]::IsPathFullyQualified($value)) { throw 'Informe o caminho completo.' }
+    }
+    $identifier = { param($value) if ($value -cnotmatch '^[a-z0-9]+([-_][a-z0-9]+)*$') { throw 'Use minusculas, numeros, - ou _.' } }
+    $serviceDefault = if ($m.Contains('Service') -and $m.Service -and $m.Service -cne 'erp') { [string] $m.Service } else { $InstanceName.ToLowerInvariant() }
+    $m.Service = Read-DBRequiredValue 'Servico monitorado (sistema protegido, ex.: seven, dominio)' $serviceDefault $identifier
+    if (-not $m.Contains('BackupIds') -or $m.BackupIds -isnot [Collections.IDictionary]) { $m.BackupIds = @{} }
+    foreach ($job in @($Data.Jobs)) {
+        $current = if ($m.BackupIds.Contains($job.Id)) { [string] $m.BackupIds[$job.Id] } else { "$($InstanceName.ToLowerInvariant())-$(([string] $job.Id).ToLowerInvariant())" }
+        $m.BackupIds[$job.Id] = Read-DBRequiredValue "backup_id do job $($job.Id) no Grafana (reuse o da versao anterior para manter o historico)" $current $identifier
+    }
 }
 
 function Invoke-DBInteractiveSetup {
@@ -533,6 +586,7 @@ function Invoke-DBInteractiveSetup {
         Add-DBScheduledJob $data $answer.Job.Id $answer.At
     }
     $data.Jobs = $jobs
+    Read-DBMonitoring $data $InstanceName
     Save-DBConfigurationData $data $configPath $InstancesRoot
     Protect-DBInstanceSecret (Read-DBConfiguration $configPath)
     return $configPath
@@ -608,6 +662,7 @@ function Get-DBSetupSummary {
         "Destinatarios age: $($recipients.Count)"
         "Completed / Logs:  $($Configuration.Paths.CompletedRoot) / $($Configuration.Paths.LogRoot)"
         'Diagnostico local: OK'
+        $(if ($Configuration.Monitoring.Enabled) { "Monitoramento:     servico $($Configuration.Monitoring.Service) em $($Configuration.Monitoring.TextfileDirectory)" } else { 'Monitoramento:     desligado (Monitoring.Enabled = $false)' })
     )
     foreach ($job in $Configuration.Jobs) {
         $source = if ($job.Provider -eq 'Directory') { $job.SourcePath } else { "banco $($job.Database)" }
@@ -617,7 +672,7 @@ function Get-DBSetupSummary {
     if ($scheduled.Count -eq 0) { $lines += 'Agenda:            nenhuma tarefa' }
     foreach ($task in $scheduled) {
         $state = if ($task.RegisteredName -in $RegisteredTasks) { 'registrada' } else { 'NAO registrada' }
-        $lines += "Tarefa:            $(Get-DBTaskFolder)$($task.RegisteredName) - $($task.Frequency) $($task.At), jobs $(@($task.Jobs) -join ', ') ($state)"
+        $lines += "Tarefa:            $(Get-DBTaskFolder)$($task.RegisteredName) - $($task.Frequency) $(@($task.At) -join ', '), jobs $(@($task.Jobs) -join ', ') ($state)"
     }
     $lines += ''
     $lines += 'Proximo passo: rode um backup manual (Executar-Backup.bat) e confira os arquivos no bucket:'
@@ -640,12 +695,75 @@ function Invoke-DBConfigurationApply {
     Restore-DBInheritedAccess $Configuration.InstanceRoot
     Restore-DBInheritedAccess $Configuration.ConfigPath
     Protect-DBInstanceSecret $Configuration
-    # Runtime: created private, or kept when already private/empty; a populated
-    # directory with foreign permissions is refused, never rewritten.
-    Set-DBPrivateDirectory $Configuration.Paths.RuntimeRoot -Enforce
+    # Runtime inside the instance folder belongs to DBBackup: it is always made
+    # private (2.0 refused when permissions had been inherited). A Runtime set
+    # elsewhere must already be private or empty; it is never rewritten.
+    if (Test-DBPathWithin $Configuration.Paths.RuntimeRoot $Configuration.InstanceRoot) { Set-DBPrivateDirectory $Configuration.Paths.RuntimeRoot -Force }
+    else { Set-DBPrivateDirectory $Configuration.Paths.RuntimeRoot -Enforce }
     foreach ($path in @($Configuration.Paths.CompletedRoot, $Configuration.Paths.LogRoot)) { $null = New-Item -ItemType Directory -Path $path -Force }
     $null = Test-DBInstance $Configuration $InstancesRoot
-    if (-not $Configuration.Contains('Schedule')) { return }
+    if ($Configuration.Contains('Schedule')) { Invoke-DBScheduleApply -Configuration $Configuration -ScriptPath $ScriptPath -PwshPath $PwshPath }
+    Invoke-DBLegacyTaskCleanup
+}
+
+function Edit-DBConfiguration {
+    <#
+    Editar-Configuracao.bat: opens config.psd1 in an editor running elevated
+    (so Save writes the file, no "Save as"), waits for it to close and
+    validates the file. Returns $true when it is valid and the operator wants
+    to apply it now. An invalid file can be reopened or put back as it was.
+    #>
+    param([Parameter(Mandatory)][string] $ConfigPath, [Parameter(Mandatory)][string] $InstancesRoot, [string] $Editor = 'notepad.exe')
+    $original = [IO.File]::ReadAllBytes($ConfigPath)
+    while ($true) {
+        Write-DBSetupMessage "Abrindo $ConfigPath no editor. Salve (Ctrl+S) e feche o editor para continuar."
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        Start-Process -FilePath $Editor -ArgumentList "`"$ConfigPath`"" -Wait
+        # Some editors (Notepad of Windows 11) return at once; wait for the operator then.
+        if ($watch.Elapsed.TotalSeconds -lt 3) { $null = Read-Host 'Depois de salvar e fechar o editor, pressione Enter' }
+        $changed = -not [Linq.Enumerable]::SequenceEqual([byte[]] $original, [byte[]] [IO.File]::ReadAllBytes($ConfigPath))
+        try {
+            $configuration = Read-DBConfiguration $ConfigPath
+            Assert-DBInstanceIsolation $configuration $InstancesRoot
+            $null = Get-DBScheduleTask $configuration
+        }
+        catch {
+            Write-Warning "Configuracao invalida: $(Protect-DBMessage $_.Exception.Message)"
+            Write-DBSetupMessage 'Enquanto o arquivo estiver invalido, os backups agendados desta instancia terminam com erro de configuracao (exit 2).'
+            if (Read-DBConfirmation 'Abrir o arquivo de novo para corrigir?' $true) { continue }
+            if (Read-DBConfirmation 'Voltar o arquivo para como estava antes da edicao?' $true) {
+                [IO.File]::WriteAllBytes($ConfigPath, $original)
+                Write-DBSetupMessage 'Arquivo restaurado; nada foi aplicado.'
+                return $false
+            }
+            throw 'Configuracao invalida; nada foi aplicado.'
+        }
+        if (-not $changed) {
+            Write-DBSetupMessage 'O arquivo nao foi alterado.'
+            return (Read-DBConfirmation 'Aplicar a configuracao mesmo assim?' $false)
+        }
+        Write-DBSetupMessage 'Configuracao valida.'
+        if (Read-DBConfirmation 'Aplicar agora (permissoes, diagnostico e tarefas agendadas)?' $true) { return $true }
+        Write-DBSetupMessage 'Alteracoes salvas, mas nao aplicadas: as tarefas agendadas so mudam depois de Aplicar-Configuracao.bat.'
+        return $false
+    }
+}
+
+function Invoke-DBLegacyTaskCleanup {
+    <# Offers to delete tasks of DBBackup 0.x/1.x, which keep running the old installation. #>
+    try { $legacy = @(Get-DBLegacyTask) }
+    catch { Write-Warning "Nao foi possivel procurar tarefas de versoes anteriores: $(Protect-DBMessage $_.Exception.Message)"; return }
+    if ($legacy.Count -eq 0) { return }
+    Write-DBSetupMessage ''
+    Write-DBSetupMessage 'Tarefas de versoes anteriores do DBBackup encontradas. Elas nao sao gerenciadas por esta versao e continuam executando a instalacao antiga:'
+    foreach ($task in $legacy) { Write-DBSetupMessage "  $($task.Folder)\$($task.Name)  ->  $($task.Arguments)" }
+    if ((Read-Host 'Remover estas tarefas antigas? Digite SIM') -cne 'SIM') { Write-DBSetupMessage 'Tarefas antigas mantidas.'; return }
+    Remove-DBLegacyTask $legacy
+    Write-DBSetupMessage "$($legacy.Count) tarefa(s) antiga(s) removida(s)."
+}
+
+function Invoke-DBScheduleApply {
+    param([Collections.IDictionary] $Configuration, [string] $ScriptPath, [string] $PwshPath)
     $folder = Get-DBTaskFolder
     $existing = @(Get-DBSchedulerSnapshot $folder)
     $plan = @(Get-DBSchedulePlan -Configuration $Configuration -Existing $existing -PwshPath $PwshPath -ScriptPath $ScriptPath -WorkingDirectory (Split-Path $ScriptPath))
@@ -661,4 +779,4 @@ function Invoke-DBConfigurationApply {
     Invoke-DBSchedulePlan -Configuration $Configuration -Plan $plan
 }
 
-Export-ModuleMember -Function Invoke-DBInteractiveSetup, Invoke-DBConfigurationApply, Test-DBInstance, ConvertTo-DBDataLiteral, Invoke-DBConnectionCheck, Test-DBDatabaseConnection, Get-DBOwnedTask, Get-DBSetupSummary, Split-DBRemoteRoot, Initialize-DBSharedSecret, Read-DBJob, Add-DBScheduledJob, Save-DBConfigurationData, ConvertTo-DBJobId, Find-DBCredentialCandidate, Restore-DBInheritedAccess
+Export-ModuleMember -Function Edit-DBConfiguration, Read-DBConfirmation, ConvertTo-DBTimeList, Invoke-DBInteractiveSetup, Invoke-DBConfigurationApply, Test-DBInstance, ConvertTo-DBDataLiteral, Invoke-DBConnectionCheck, Test-DBDatabaseConnection, Get-DBOwnedTask, Get-DBSetupSummary, Split-DBRemoteRoot, Initialize-DBSharedSecret, Read-DBJob, Add-DBScheduledJob, Save-DBConfigurationData, ConvertTo-DBJobId, Find-DBCredentialCandidate, Restore-DBInheritedAccess

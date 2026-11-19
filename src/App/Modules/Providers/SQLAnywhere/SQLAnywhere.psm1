@@ -54,6 +54,35 @@ function ConvertTo-DBSafeToolOutput {
     return $Text
 }
 
+function Get-DBSqlAnywhereSizeEstimate {
+    <#
+    Best-effort size of the database file (FileSize pages x PageSize) read with
+    dbping -d -pd FileSize,PageSize. Used only on the first run of a job, before
+    the capacity history exists. Returns $null when dbping is absent, fails or
+    its output is not understood; the run then checks only ReserveBytes.
+    #>
+    param([Collections.IDictionary] $Configuration, $Job, $Runtime)
+    if ($null -eq $Runtime) { return $null }
+    $dbping = Join-Path (Split-Path -Parent $Configuration.Tools.DbBackup) 'dbping.exe'
+    if (-not (Test-Path -LiteralPath $dbping -PathType Leaf)) { return $null }
+    $connection = Read-DBSqlConnection $Job.CredentialFile
+    # Never start a database just to measure it.
+    $connection.ASTART = 'NO'
+    # Transient credentials live in the private Work directory of this run.
+    $options = Join-Path $Runtime.Work "dbping-$([guid]::NewGuid().ToString('N')).options"
+    try {
+        Write-DBSqlOption $options $connection
+        $probe = Invoke-DBTool -Executable $dbping -Arguments @('-d', '-pd', 'FileSize,PageSize', "@$options") -TimeoutSeconds 60
+        if ($probe.ExitCode -ne 0) { return $null }
+        $text = "$($probe.StdOut)`n$($probe.StdErr)"
+        $pages = [regex]::Match($text, '(?im)\bFileSize\b[^\d\r\n]*(\d+)')
+        $pageSize = [regex]::Match($text, '(?im)\bPageSize\b[^\d\r\n]*(\d+)')
+        if (-not $pages.Success -or -not $pageSize.Success) { return $null }
+        return [long] $pages.Groups[1].Value * [long] $pageSize.Groups[1].Value
+    }
+    finally { if (Test-Path -LiteralPath $options) { Remove-Item -LiteralPath $options -Force } }
+}
+
 function Invoke-DBSqlAnywhere {
     param([Collections.IDictionary] $Configuration, $Job, $Runtime)
     $started = [DateTime]::UtcNow
@@ -98,4 +127,4 @@ function Invoke-DBSqlAnywhere {
         if (Test-Path -LiteralPath $secretRoot) { Remove-Item -LiteralPath $secretRoot -Recurse -Force -ErrorAction Stop }
     }
 }
-Export-ModuleMember -Function Read-DBSqlConnection, Write-DBSqlOption, ConvertTo-DBSafeToolOutput, Invoke-DBSqlAnywhere
+Export-ModuleMember -Function Read-DBSqlConnection, Write-DBSqlOption, ConvertTo-DBSafeToolOutput, Get-DBSqlAnywhereSizeEstimate, Invoke-DBSqlAnywhere

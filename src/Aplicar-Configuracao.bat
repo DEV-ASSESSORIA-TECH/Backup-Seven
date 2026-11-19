@@ -16,6 +16,7 @@ if not defined PWSH (
     exit /b 1
 )
 title DBBackup
+rem Lista as instancias e reaplica a escolhida (ACL, diagnostico e tarefas).
 "%PWSH%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0App\Setup.ps1" -Apply
 set "RESULT=%ERRORLEVEL%"
 pause

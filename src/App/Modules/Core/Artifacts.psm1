@@ -74,6 +74,7 @@ function Send-DBBundle {
     # Md5 is recorded at creation; bundles from earlier versions compute it here.
     $md5Property = $s.PSObject.Properties['Md5']
     $md5 = if ($null -ne $md5Property) { [string] $md5Property.Value } else { $null }
+    Write-DBLog $Runtime.LogPath $s.Job "Step 4/4: uploading $([Math]::Round([long] $s.SizeBytes / 1MB)) MB to $($s.RemotePath)."
     $sent = Send-DBBackupFile -RclonePath $Configuration.Tools.Rclone -ConfigPath $Configuration.Storage.ConfigPath -LocalPath (Join-Path $BundlePath $s.FileName) `
         -RemotePath $s.RemotePath -ExpectedSize ([long] $s.SizeBytes) -ExpectedMd5 $md5 -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
     $level = if ($sent.Verification -eq 'size-only') { 'WARN' } else { 'INFO' }
@@ -166,6 +167,7 @@ function Publish-DBPackage {
     if ($null -ne $contentPath) { $payloadBytes += Get-DBDirectorySize $contentPath }
     Assert-DBFreeSpace -Path $Runtime.Work -RequiredBytes ([long] ([decimal] $payloadBytes * 1.05 + 1048576)) -ReserveBytes $Configuration.Execution.ReserveBytes
     $archive = Join-Path $Runtime.Work "$base.7z"
+    Write-DBLog $Runtime.LogPath $Job.Id "Step 2/4: compressing $([Math]::Round($payloadBytes / 1MB)) MB into $base.7z (7-Zip, level $($Configuration.Archive.CompressionLevel)) and testing the archive."
     $archiveSettings = @{
         SevenZipPath = $Configuration.Tools.SevenZip; ArchivePath = $archive; CompressionLevel = $Configuration.Archive.CompressionLevel
         CpuLimitPercent = $Configuration.Archive.CpuLimitPercent; TimeoutSeconds = $Configuration.Execution.ToolTimeoutSeconds
@@ -188,6 +190,7 @@ function Publish-DBPackage {
     try {
         Assert-DBFreeSpace -Path $Runtime.Staging -RequiredBytes ([long] ([decimal] (Get-Item -LiteralPath $archive).Length * 1.05 + 1048576)) -ReserveBytes $Configuration.Execution.ReserveBytes
         $temp = Join-Path $bundle 'payload.tmp'
+        Write-DBLog $Runtime.LogPath $Job.Id "Step 3/4: encrypting $([Math]::Round((Get-Item -LiteralPath $archive).Length / 1MB)) MB with age."
         Protect-DBArchive -AgePath $Configuration.Tools.Age -InputPath $archive -OutputPath $temp -RecipientsFile $Configuration.Encryption.RecipientsFile -TimeoutSeconds $Configuration.Execution.ToolTimeoutSeconds
         $name = "$base.7z.age"
         $payload = Join-Path $bundle $name
