@@ -4,6 +4,15 @@ Todas as alterações relevantes do DBBackup são registradas neste arquivo. O
 projeto usa as versões semânticas definidas em `VERSION` e as principais seções
 do Keep a Changelog, sem exigir todas as seções em cada versão.
 
+## [2.2.2] - 2026-11-19
+
+### Corrigido
+
+- Monitoramento: o label `site` voltou a ser o local do servidor
+  (`Monitoring.Site` no `ambiente.psd1`, ex.: `assessoria`, perguntado pelo
+  setup), como na 0.6. Antes era o nome da instância (`seven`, `dominio`). Sem
+  `Site`, continua o nome da instância.
+
 ## [2.2.1] - 2026-11-19
 
 ### Corrigido

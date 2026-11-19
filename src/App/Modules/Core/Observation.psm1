@@ -86,7 +86,7 @@ function Publish-DBJobMonitoring {
         $content = Format-DBBackupMetric -Service $m.Service -BackupId $backupId -CollectedAtUtc $collected -CollectionSucceeded $collectionOk `
             -AttemptFinishedAtUtc $collected -AttemptSucceeded ($Status -eq 'SUCCESS') -AttemptDegraded ($Status -eq 'DEGRADED') `
             -AttemptDurationSeconds $DurationSeconds -LastSuccessTimestamp $success -LastSuccessSizeBytes $size -ExpectedIntervalSeconds $interval -SuccessDueTimestamp $due `
-            -InfoLabels @{kind=$(if($incremental){'log'}elseif($Job.Provider -eq 'Directory'){'files'}else{'database'});producer='dbbackup';producer_version=(Get-DBApplicationVersion);site=$Configuration.InstanceName.ToLowerInvariant();criticality=$m.Criticality[$Job.Id];destination=$Configuration.Storage.Destination}
+            -InfoLabels @{kind=$(if($incremental){'log'}elseif($Job.Provider -eq 'Directory'){'files'}else{'database'});producer='dbbackup';producer_version=(Get-DBApplicationVersion);site=$m.Site;criticality=$m.Criticality[$Job.Id];destination=$Configuration.Storage.Destination}
         $null = Write-DBBackupMetric -Directory $m.TextfileDirectory -Service $m.Service -BackupId $backupId -Content $content
     }
     catch { Write-DBLog $LogPath 'Monitoring/Write' $_.Exception.Message 'WARN'; return $false }

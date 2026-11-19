@@ -221,10 +221,11 @@ Describe 'Monitoring in the guided setup' {
         $null = New-Item -ItemType Directory $alloy -Force
         $data = @{ Jobs = @(@{ Id = 'Database' }, @{ Id = 'Fiscal' }); Monitoring = @{ Enabled = $false; Service = 'erp'; BackupIds = @{} } }
         $environment = @{ Monitoring = @{ TextfileDirectory = $alloy } }
-        $script:Replies = [Collections.Generic.Queue[string]]::new([string[]] @('', '', 'seven', 'database', ''))
+        $script:Replies = [Collections.Generic.Queue[string]]::new([string[]] @('', '', 'assessoria', 'seven', 'database', ''))
         Mock Read-Host { $script:Replies.Dequeue() } -ModuleName Setup
         Read-DBMonitoring $data 'Seven' $environment
         $environment.Monitoring.TextfileDirectory | Should -Be $alloy
+        $environment.Monitoring.Site | Should -Be 'assessoria'
         $data.Monitoring.Enabled | Should -BeTrue
         $data.Monitoring.Service | Should -Be 'seven'
         $data.Monitoring.BackupIds.Database | Should -Be 'database'
