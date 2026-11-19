@@ -96,9 +96,11 @@ function Get-DBSqlAnywhereLogDirectory {
     try {
         $probe = Invoke-DBTool -Executable $dbping -Arguments @('-d', '-pd', 'LogName', "@$OptionsPath") -TimeoutSeconds 60
         if ($probe.ExitCode -ne 0) { return $null }
-        $match = [regex]::Match([string] $probe.StdOut, '(?im)^\s*LogName\s*[:=]\s*(?<path>[A-Za-z]:\\[^\r\n]+?\.log)\s*$')
+        # Localized table ("Banco de dados   LogName   C:\Dados\contabil.log") or "LogName: <path>".
+        $match = [regex]::Match([string] $probe.StdOut, '(?im)\bLogName\b[\s:=]+(?<path>(?:[A-Za-z]:|\\\\)[^\r\n]*?\.log)\s*$')
         if (-not $match.Success) { return $null }
-        return Split-Path -Parent $match.Groups['path'].Value
+        $path = $match.Groups['path'].Value
+        return $path.Substring(0, $path.LastIndexOfAny([char[]] @('\', '/')))
     }
     catch { return $null }
 }
@@ -167,4 +169,4 @@ function Invoke-DBSqlAnywhere {
         if (Test-Path -LiteralPath $secretRoot) { Remove-Item -LiteralPath $secretRoot -Recurse -Force -ErrorAction Stop }
     }
 }
-Export-ModuleMember -Function Read-DBSqlConnection, Write-DBSqlOption, ConvertTo-DBSafeToolOutput, Get-DBSqlAnywhereSizeEstimate, Invoke-DBSqlAnywhere
+Export-ModuleMember -Function Get-DBSqlAnywhereLogDirectory, Read-DBSqlConnection, Write-DBSqlOption, ConvertTo-DBSafeToolOutput, Get-DBSqlAnywhereSizeEstimate, Invoke-DBSqlAnywhere

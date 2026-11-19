@@ -1,4 +1,4 @@
-# DBBackup — runbook v2.2.0
+# DBBackup — runbook v2.2.1
 
 ## Conceitos
 
